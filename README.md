@@ -1,4 +1,4 @@
-# ScanMood
+# ScanMood 1.2
 
 Application web installable sur iPhone pour traduire des scans anglais, japonais ou chinois vers le français, en conservant le ton de la scène. La traduction remplace le texte original dans les bulles et peut être corrigée avant téléchargement.
 
@@ -15,6 +15,8 @@ Application web installable sur iPhone pour traduire des scans anglais, japonais
 - export JPG ou PDF ;
 - installation en PWA et fonctionnement GitHub Pages ;
 - page démo utilisable sans service IA.
+
+La version 1.2 ajoute un vrai mode sombre, un lecteur plein écran inspiré des sites de scans, un zoom de 50 à 200 %, et transforme la roue dentée en vrais réglages. Elle conserve les corrections iPhone du calque traduit et du comparateur.
 
 ## 1. Mettre le site sur GitHub Pages
 

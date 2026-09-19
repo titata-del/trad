@@ -86,6 +86,15 @@
             <p class="microcopy">Fonctionne avec un lien direct vers une image ou un PDF public.</p>
           </div>
 
+          <div id="engineBanner" class="engine-banner">
+            <span class="engine-icon">✦</span>
+            <div>
+              <strong>La démo est prête.</strong>
+              <p>Pour traduire tes propres scans ou liens, active le moteur de traduction une seule fois.</p>
+            </div>
+            <button id="activateEngineBtn" type="button">Activer</button>
+          </div>
+
           <div class="options-grid">
             <label>
               <span>Langue d’origine</span>
@@ -139,10 +148,16 @@
                 <button data-view="translated" class="active">Traduit</button>
                 <button data-view="compare">Comparer</button>
               </div>
-              <button id="downloadBtn" class="download-btn">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0 4-4m-4 4-4-4"/><path d="M5 19h14"/></svg>
-                Télécharger
-              </button>
+              <div class="viewer-actions">
+                <button id="readerBtn" class="reader-btn" aria-pressed="false">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5m13 5h5v-5"/></svg>
+                  <span>Mode lecture</span>
+                </button>
+                <button id="downloadBtn" class="download-btn">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0 4-4m-4 4-4-4"/><path d="M5 19h14"/></svg>
+                  <span>Télécharger</span>
+                </button>
+              </div>
             </div>
 
             <div id="pageNav" class="page-nav" hidden>
@@ -152,10 +167,18 @@
             </div>
 
             <div id="viewerStage" class="viewer-stage" data-view="translated">
-              <img id="originalImage" alt="Scan original" />
-              <div id="translatedLayer" class="translated-layer"><canvas id="translatedCanvas"></canvas></div>
-              <input id="compareRange" class="compare-range" type="range" min="0" max="100" value="52" aria-label="Comparer l’original et la traduction" />
-              <span id="compareHandle" class="compare-handle"></span>
+              <div id="stagePage" class="stage-page">
+                <img id="originalImage" alt="Scan original" />
+                <div id="translatedLayer" class="translated-layer"><canvas id="translatedCanvas"></canvas></div>
+                <input id="compareRange" class="compare-range" type="range" min="0" max="100" value="52" aria-label="Comparer l’original et la traduction" />
+                <span id="compareHandle" class="compare-handle"></span>
+              </div>
+            </div>
+
+            <div id="readerZoom" class="reader-zoom" aria-label="Zoom de lecture">
+              <button id="zoomOutBtn" aria-label="Dézoomer">−</button>
+              <span id="zoomLabel">100%</span>
+              <button id="zoomInBtn" aria-label="Zoomer">＋</button>
             </div>
           </div>
 
@@ -178,17 +201,29 @@
     <dialog id="settingsDialog" class="settings-dialog">
       <form method="dialog">
         <div class="dialog-head">
-          <div><p class="eyebrow dark">Connexion</p><h2>Service de traduction</h2></div>
+          <div><p class="eyebrow dark">Préférences</p><h2>Réglages</h2></div>
           <button class="icon-btn" value="cancel" aria-label="Fermer">×</button>
         </div>
-        <p class="dialog-copy">Colle l’adresse du service installé avec le dossier <strong>worker</strong>. La clé IA ne doit jamais être placée ici.</p>
-        <label class="field-label" for="apiUrlInput">Adresse du service</label>
-        <input id="apiUrlInput" class="dialog-input" type="url" placeholder="https://scanmood-api.votre-nom.workers.dev" />
-        <p id="settingsMessage" class="settings-message" aria-live="polite"></p>
-        <div class="dialog-actions">
-          <button id="clearApiBtn" type="button" class="text-btn danger">Retirer</button>
-          <button id="saveApiBtn" type="button" class="primary-btn compact">Enregistrer</button>
-        </div>
+
+        <section class="settings-section">
+          <div class="setting-title"><strong>Apparence</strong><span>Choisis le confort de lecture</span></div>
+          <div class="theme-switch" role="group" aria-label="Thème de l’application">
+            <button type="button" data-theme-choice="light"><span>☀</span> Clair</button>
+            <button type="button" data-theme-choice="dark"><span>☾</span> Sombre</button>
+          </div>
+        </section>
+
+        <section class="settings-section engine-settings">
+          <div class="setting-title"><strong>Moteur de traduction</strong><span id="engineSettingStatus">Mode démo</span></div>
+          <p class="dialog-copy">La démo fonctionne directement. Pour traduire tes propres scans, connecte une seule fois le moteur fourni dans le dossier <strong>worker</strong>.</p>
+          <label class="field-label" for="apiUrlInput">Adresse du moteur</label>
+          <input id="apiUrlInput" class="dialog-input" type="url" placeholder="https://scanmood-api.votre-nom.workers.dev" />
+          <p id="settingsMessage" class="settings-message" aria-live="polite"></p>
+          <div class="dialog-actions">
+            <button id="clearApiBtn" type="button" class="text-btn danger">Retirer</button>
+            <button id="saveApiBtn" type="button" class="primary-btn compact">Connecter</button>
+          </div>
+        </section>
       </form>
     </dialog>
 

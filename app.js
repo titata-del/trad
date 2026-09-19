@@ -8,6 +8,9 @@ const state = {
   pages: [],
   currentPage: 0,
   apiBase: localStorage.getItem("scanmood_api") || window.SCANMOOD_CONFIG?.apiBase || "",
+  theme: localStorage.getItem("scanmood_theme") || "light",
+  readerMode: false,
+  zoom: 1,
   progressTimer: null,
 };
 
@@ -16,9 +19,10 @@ const elements = {
   fileInput: $("#fileInput"), dropZone: $("#dropZone"), dropTitle: $("#dropTitle"), dropMeta: $("#dropMeta"), urlInput: $("#urlInput"),
   translateBtn: $("#translateBtn"), sourceCard: $("#sourceCard"), processing: $("#processingCard"), progress: $("#progressBar"),
   processingTitle: $("#processingTitle"), processingMeta: $("#processingMeta"), result: $("#resultSection"), resultTitle: $("#resultTitle"), resultMeta: $("#resultMeta"),
-  originalImage: $("#originalImage"), canvas: $("#translatedCanvas"), translatedLayer: $("#translatedLayer"), viewerStage: $("#viewerStage"),
+  originalImage: $("#originalImage"), canvas: $("#translatedCanvas"), translatedLayer: $("#translatedLayer"), viewerStage: $("#viewerStage"), stagePage: $("#stagePage"),
   pageNav: $("#pageNav"), pageCount: $("#pageCount"), regionList: $("#regionList"), apiStatus: $("#apiStatus"), toast: $("#toast"),
   settings: $("#settingsDialog"), apiUrlInput: $("#apiUrlInput"), settingsMessage: $("#settingsMessage"), compareRange: $("#compareRange"), compareHandle: $("#compareHandle"),
+  readerBtn: $("#readerBtn"), zoomLabel: $("#zoomLabel"),
 };
 
 function toast(message) {
@@ -32,6 +36,15 @@ function updateApiStatus() {
   const live = Boolean(state.apiBase);
   elements.apiStatus.classList.toggle("live", live);
   $("span", elements.apiStatus).textContent = live ? "IA connectée" : "Mode démo";
+  $("#engineBanner")?.classList.toggle("connected", live);
+  $("#engineSettingStatus").textContent = live ? "Connecté" : "Mode démo";
+}
+
+function applyTheme(theme) {
+  state.theme = theme === "dark" ? "dark" : "light";
+  document.documentElement.dataset.theme = state.theme;
+  localStorage.setItem("scanmood_theme", state.theme);
+  $$('[data-theme-choice]').forEach(button => button.classList.toggle("active", button.dataset.themeChoice === state.theme));
 }
 
 function updatePin() {
@@ -182,6 +195,10 @@ async function translatePage(page, index, total) {
 }
 
 async function runTranslation({ demo = false } = {}) {
+  if (!demo && !state.apiBase) {
+    openSettings("Pour traduire un vrai scan, connecte d’abord le moteur de traduction. La page démo, elle, fonctionne sans connexion.");
+    return;
+  }
   elements.result.hidden = true;
   elements.processing.hidden = false;
   startProgress();
@@ -195,7 +212,9 @@ async function runTranslation({ demo = false } = {}) {
       state.pages = await buildPagesFromFiles();
     }
     if (!state.pages.length) throw new Error("Aucune page à traduire.");
-    for (let i = 0; i < state.pages.length; i++) await translatePage(state.pages[i], i, state.pages.length);
+    if (!demo) {
+      for (let i = 0; i < state.pages.length; i++) await translatePage(state.pages[i], i, state.pages.length);
+    }
     clearInterval(state.progressTimer);
     setProcessing("Traduction terminée", "Mise en page du français dans les bulles", 100);
     state.currentPage = 0;
@@ -203,7 +222,7 @@ async function runTranslation({ demo = false } = {}) {
     setTimeout(() => {
       elements.processing.hidden = true;
       elements.result.hidden = false;
-      elements.result.scrollIntoView({ behavior: "smooth", block: "start" });
+      toggleReaderMode(true);
     }, 420);
   } catch (error) {
     clearInterval(state.progressTimer);
@@ -231,8 +250,7 @@ async function safeJson(response) { try { return await response.json(); } catch 
 async function renderCurrentPage() {
   const page = state.pages[state.currentPage];
   if (!page) return;
-  elements.originalImage.src = page.dataUrl;
-  await loadImage(page.dataUrl);
+  await setImageElementSource(elements.originalImage, page.dataUrl);
   await drawTranslation(page);
   elements.pageNav.hidden = state.pages.length < 2;
   elements.pageCount.textContent = `Page ${state.currentPage + 1} sur ${state.pages.length}`;
@@ -245,6 +263,15 @@ async function renderCurrentPage() {
   renderRegionList(page);
 }
 
+function setImageElementSource(image, src) {
+  return new Promise((resolve, reject) => {
+    if (image.src === src && image.complete && image.naturalWidth) { resolve(); return; }
+    image.onload = () => { image.onload = null; image.onerror = null; resolve(); };
+    image.onerror = () => { image.onload = null; image.onerror = null; reject(new Error("L’image ne peut pas être affichée.")); };
+    image.src = src;
+  });
+}
+
 async function drawTranslation(page) {
   const image = await loadImage(page.dataUrl);
   const canvas = elements.canvas;
@@ -252,7 +279,9 @@ async function drawTranslation(page) {
   const ctx = canvas.getContext("2d");
   ctx.drawImage(image, 0, 0);
   for (const region of page.regions) drawRegion(ctx, canvas, region);
+  syncStageSize();
   requestAnimationFrame(syncStageSize);
+  setTimeout(syncStageSize, 80);
 }
 
 function drawRegion(ctx, canvas, region) {
@@ -328,26 +357,51 @@ function kindLabel(kind) { return ({ speech: "Dialogue", thought: "Pensée", nar
 function languageLabel(language) { return ({ english: "Anglais", japanese: "Japonais", chinese: "Chinois", auto: "Langue détectée" })[language] || "Langue détectée"; }
 
 function syncStageSize() {
-  const width = elements.originalImage.clientWidth;
+  if (!elements.canvas.width || !elements.canvas.height) return;
+  const padding = state.readerMode ? 0 : (window.innerWidth <= 680 ? 16 : 44);
+  const available = Math.max(1, elements.viewerStage.clientWidth - padding);
+  const natural = elements.originalImage.naturalWidth || elements.canvas.width;
+  const fittedWidth = Math.min(natural, available);
+  const width = Math.round(fittedWidth * (state.readerMode ? state.zoom : 1));
   const ratio = elements.canvas.height / elements.canvas.width;
-  elements.translatedLayer.style.width = `${width}px`;
-  elements.canvas.style.width = `${width}px`;
-  elements.canvas.style.height = `${width * ratio}px`;
+  elements.stagePage.style.width = `${width}px`;
+  elements.stagePage.style.height = `${Math.round(width * ratio)}px`;
+  elements.originalImage.style.width = "100%";
+  elements.originalImage.style.height = "100%";
+  elements.canvas.style.width = "100%";
+  elements.canvas.style.height = "100%";
+}
+
+function toggleReaderMode(force) {
+  state.readerMode = typeof force === "boolean" ? force : !state.readerMode;
+  document.body.classList.toggle("reader-mode", state.readerMode);
+  elements.readerBtn.setAttribute("aria-pressed", String(state.readerMode));
+  $("span", elements.readerBtn).textContent = state.readerMode ? "Quitter" : "Mode lecture";
+  if (!state.readerMode) state.zoom = 1;
+  updateZoom();
+  setTimeout(syncStageSize, 30);
+}
+
+function updateZoom(delta = 0) {
+  state.zoom = clamp(Math.round((state.zoom + delta) * 10) / 10, .5, 2);
+  elements.zoomLabel.textContent = `${Math.round(state.zoom * 100)}%`;
+  syncStageSize();
 }
 
 async function makeDemoPage() {
   const canvas = document.createElement("canvas");
   canvas.width = 920; canvas.height = 1240;
   const ctx = canvas.getContext("2d");
-  ctx.fillStyle = "#e5e5e8"; ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = "#292a31"; ctx.fillRect(44, 44, 832, 530);
-  ctx.fillStyle = "#464852"; ctx.beginPath(); ctx.arc(460, 340, 185, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = "#101116"; ctx.fillRect(44, 600, 832, 596);
-  ctx.fillStyle = "#242630"; ctx.beginPath(); ctx.moveTo(44, 1080); ctx.lineTo(430, 680); ctx.lineTo(876, 1080); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = "#f7f7f5"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = "#17171b"; ctx.lineWidth = 10;
+  ctx.fillStyle = "#d8d8dc"; ctx.fillRect(44, 44, 832, 530); ctx.strokeRect(44, 44, 832, 530);
+  ctx.fillStyle = "#a9aab1"; ctx.beginPath(); ctx.arc(460, 340, 185, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = "#efeff1"; ctx.fillRect(44, 600, 832, 596); ctx.strokeRect(44, 600, 832, 596);
+  ctx.fillStyle = "#c5c6cb"; ctx.beginPath(); ctx.moveTo(44, 1080); ctx.lineTo(430, 680); ctx.lineTo(876, 1080); ctx.closePath(); ctx.fill();
   drawBubble(ctx, 88, 88, 350, 180, "もう逃げない。\n今度は私が守る。", 31);
   drawBubble(ctx, 520, 440, 300, 145, "本気なのか？", 35);
   drawBubble(ctx, 126, 850, 350, 165, "ああ。\n約束する。", 35);
-  ctx.save(); ctx.translate(742, 780); ctx.rotate(-.15); ctx.fillStyle = "#fff"; ctx.font = "900 58px sans-serif"; ctx.fillText("ドン", 0, 0); ctx.restore();
+  ctx.save(); ctx.translate(742, 780); ctx.rotate(-.15); ctx.fillStyle = "#111"; ctx.font = "900 58px sans-serif"; ctx.fillText("ドン", 0, 0); ctx.restore();
   const dataUrl = canvas.toDataURL("image/jpeg", .93);
   return { name: "Page démo", dataUrl, detectedLanguage: "japanese", regions: demoRegionsRaw() };
 }
@@ -423,7 +477,7 @@ elements.dropZone.addEventListener("dragleave", () => elements.dropZone.classLis
 elements.dropZone.addEventListener("drop", event => { event.preventDefault(); elements.dropZone.classList.remove("dragover"); selectFiles(event.dataTransfer.files); });
 elements.translateBtn.addEventListener("click", () => runTranslation());
 $("#demoBtn").addEventListener("click", () => runTranslation({ demo: true }));
-$("#newScanBtn").addEventListener("click", () => { elements.result.hidden = true; elements.sourceCard.scrollIntoView({ behavior: "smooth", block: "start" }); });
+$("#newScanBtn").addEventListener("click", () => { toggleReaderMode(false); elements.result.hidden = true; elements.sourceCard.scrollIntoView({ behavior: "smooth", block: "start" }); });
 
 // Résultats
 $$('[data-view]').forEach(button => button.addEventListener("click", () => {
@@ -439,10 +493,20 @@ $("#prevPage").addEventListener("click", async () => { if (state.currentPage > 0
 $("#nextPage").addEventListener("click", async () => { if (state.currentPage < state.pages.length - 1) { state.currentPage++; await renderCurrentPage(); } });
 $("#redrawBtn").addEventListener("click", async () => { await drawTranslation(state.pages[state.currentPage]); toast("Modifications appliquées"); });
 $("#downloadBtn").addEventListener("click", downloadResult);
+elements.readerBtn.addEventListener("click", () => toggleReaderMode());
+$("#zoomOutBtn").addEventListener("click", () => updateZoom(-.1));
+$("#zoomInBtn").addEventListener("click", () => updateZoom(.1));
 window.addEventListener("resize", syncStageSize);
 
 // Réglages
-$("#settingsBtn").addEventListener("click", () => { elements.apiUrlInput.value = state.apiBase; elements.settingsMessage.textContent = ""; elements.settings.showModal(); });
+function openSettings(message = "") {
+  elements.apiUrlInput.value = state.apiBase;
+  elements.settingsMessage.textContent = message;
+  elements.settings.showModal();
+}
+$("#settingsBtn").addEventListener("click", () => openSettings());
+$("#activateEngineBtn").addEventListener("click", () => openSettings("Suis le guide du README pour obtenir cette adresse, puis colle-la ici."));
+$$('[data-theme-choice]').forEach(button => button.addEventListener("click", () => applyTheme(button.dataset.themeChoice)));
 $("#saveApiBtn").addEventListener("click", () => {
   const value = elements.apiUrlInput.value.trim().replace(/\/$/, "");
   if (value && !/^https:\/\//i.test(value)) { elements.settingsMessage.textContent = "L’adresse doit commencer par https://"; return; }
@@ -452,6 +516,9 @@ $("#saveApiBtn").addEventListener("click", () => {
 });
 $("#clearApiBtn").addEventListener("click", () => { elements.apiUrlInput.value = ""; state.apiBase = ""; localStorage.removeItem("scanmood_api"); updateApiStatus(); elements.settings.close(); toast("Service retiré"); });
 
-if ("serviceWorker" in navigator && location.protocol.startsWith("http")) navigator.serviceWorker.register("./sw.js").catch(() => {});
+if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
+  navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" }).then(registration => registration.update()).catch(() => {});
+}
+applyTheme(state.theme);
 updateApiStatus();
 if (sessionStorage.getItem("scanmood_unlocked") === "1") { elements.lock.hidden = true; elements.app.hidden = false; }
