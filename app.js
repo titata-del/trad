@@ -472,6 +472,12 @@ $("#setupHelpBtn").addEventListener("click", () => openSettings("Suis le guide Ã
 $$('[data-theme-choice]').forEach(button => button.addEventListener("click", () => applyTheme(button.dataset.themeChoice)));
 
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
+  let reloadingForUpdate = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (reloadingForUpdate) return;
+    reloadingForUpdate = true;
+    location.reload();
+  });
   navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" }).then(registration => registration.update()).catch(() => {});
 }
 applyTheme(state.theme);
