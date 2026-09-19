@@ -1,5 +1,5 @@
 window.SCANMOOD_CONFIG = {
-  // Facultatif : indique ici l’URL du Worker pour tous les utilisateurs.
-  // Exemple : "https://scanmood-api.votre-nom.workers.dev"
+  // Colle ici l’adresse donnée par Cloudflare après le déploiement gratuit.
+  // Exemple : "https://scanmood-api.ton-sous-domaine.workers.dev"
   apiBase: ""
 };

@@ -72,6 +72,7 @@ Coordinates are integers from 0 to 1000 relative to the full image. The rectangl
 }
 
 function extractContent(payload) {
+  if (typeof payload?.response === "string") return payload.response;
   const content = payload?.choices?.[0]?.message?.content;
   if (typeof content === "string") return content;
   if (Array.isArray(content)) return content.map(part => part.text || "").join("");
@@ -79,36 +80,66 @@ function extractContent(payload) {
 }
 
 function parseModelJson(text) {
-  const cleaned = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  const raw = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  const cleaned = start >= 0 && end > start ? raw.slice(start, end + 1) : raw;
   const parsed = JSON.parse(cleaned);
   if (!Array.isArray(parsed.regions)) throw new Error("Format de réponse invalide.");
   return parsed;
 }
 
+function imageBytes(dataUrl) {
+  const base64 = dataUrl.split(",", 2)[1] || "";
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
 async function translate(request, env, origin) {
-  if (!env.OPENAI_API_KEY) return json({ error: "La clé OPENAI_API_KEY n’est pas configurée sur le service." }, 503, origin);
+  if (!env.AI) return json({ error: "Le moteur Workers AI n’est pas relié à ce Worker." }, 503, origin);
   const body = await request.json();
   if (!/^data:image\/(jpeg|png|webp);base64,/i.test(body?.imageDataUrl || "")) return json({ error: "Image invalide." }, 400, origin);
   if (body.imageDataUrl.length > 14_000_000) return json({ error: "Image trop lourde." }, 413, origin);
-  const upstream = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: { "Authorization": `Bearer ${env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: env.OPENAI_MODEL || "gpt-5.6",
-      messages: [{ role: "user", content: [
-        { type: "text", text: translationPrompt(body.sourceLanguage, body.style) },
-        { type: "image_url", image_url: { url: body.imageDataUrl, detail: "high" } },
-      ] }],
+  try {
+    const payload = await env.AI.run(env.AI_MODEL || "@cf/google/gemma-4-26b-a4b-it", {
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text", text: translationPrompt(body.sourceLanguage, body.style) },
+          { type: "image_url", image_url: { url: body.imageDataUrl } },
+        ],
+      }],
+      temperature: 0.15,
+      max_completion_tokens: 4096,
       response_format: { type: "json_object" },
-    }),
-  });
-  const payload = await upstream.json();
-  if (!upstream.ok) {
-    const detail = payload?.error?.message || "Le moteur de traduction n’a pas répondu.";
-    return json({ error: detail }, upstream.status >= 500 ? 502 : 400, origin);
+      chat_template_kwargs: { enable_thinking: false },
+    });
+    return json(parseModelJson(extractContent(payload)), 200, origin);
+  } catch (error) {
+    const detail = String(error?.message || error || "");
+    if (/quota|daily free allocation|neurons|usage limit/i.test(detail)) {
+      return json({ error: "La limite gratuite du jour est atteinte. Réessaie demain." }, 429, origin);
+    }
+
+    // Compatibilité de secours pour les modèles vision qui attendent les octets bruts.
+    try {
+      const payload = await env.AI.run(env.AI_FALLBACK_MODEL || "@cf/llava-hf/llava-1.5-7b-hf", {
+        image: [...imageBytes(body.imageDataUrl)],
+        prompt: translationPrompt(body.sourceLanguage, body.style),
+        max_tokens: 4096,
+        temperature: 0.15,
+      });
+      return json(parseModelJson(extractContent(payload)), 200, origin);
+    } catch (fallbackError) {
+      const fallbackDetail = String(fallbackError?.message || fallbackError || detail);
+      if (/quota|daily free allocation|neurons|usage limit/i.test(fallbackDetail)) {
+        return json({ error: "La limite gratuite du jour est atteinte. Réessaie demain." }, 429, origin);
+      }
+      return json({ error: "Le moteur gratuit n’a pas réussi à lire cette page. Essaie une image plus nette." }, 502, origin);
+    }
   }
-  try { return json(parseModelJson(extractContent(payload)), 200, origin); }
-  catch { return json({ error: "La traduction reçue n’a pas pu être lue. Réessaie." }, 502, origin); }
 }
 
 export default {
@@ -120,7 +151,7 @@ export default {
     try {
       if (request.method === "POST" && url.pathname === "/translate") return await translate(request, env, origin);
       if (request.method === "POST" && url.pathname === "/fetch") return await proxyFile(request, env, origin);
-      if (url.pathname === "/health") return json({ ok: true }, 200, origin);
+      if (url.pathname === "/health") return json({ ok: true, engine: "cloudflare-workers-ai", free: true }, 200, origin);
       return json({ error: "Route introuvable." }, 404, origin);
     } catch (error) {
       return json({ error: error?.message || "Erreur inattendue." }, 500, origin);

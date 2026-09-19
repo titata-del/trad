@@ -43,7 +43,7 @@
           <span>ScanMood</span>
         </a>
         <div class="top-actions">
-          <span id="apiStatus" class="status-pill"><i></i><span>Mode démo</span></span>
+          <span id="apiStatus" class="status-pill"><i></i><span>À configurer</span></span>
           <button id="settingsBtn" class="icon-btn" aria-label="Réglages" title="Réglages">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-1.94 1.94-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.04 1.56V20H9.14v-.08a1.7 1.7 0 0 0-1.04-1.56 1.7 1.7 0 0 0-1.88.34l-.06.06-1.94-1.94.06-.06A1.7 1.7 0 0 0 4.62 15a1.7 1.7 0 0 0-1.56-1.04H3v-2.74h.08a1.7 1.7 0 0 0 1.56-1.04A1.7 1.7 0 0 0 4.3 8.3l-.06-.06L6.18 6.3l.06.06a1.7 1.7 0 0 0 1.88.34 1.7 1.7 0 0 0 1.04-1.56V5h2.74v.08a1.7 1.7 0 0 0 1.04 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06 1.94 1.94-.06.06a1.7 1.7 0 0 0-.34 1.88 1.7 1.7 0 0 0 1.56 1.04H20v2.74h-.08A1.7 1.7 0 0 0 19.4 15Z"/></svg>
           </button>
@@ -89,10 +89,10 @@
           <div id="engineBanner" class="engine-banner">
             <span class="engine-icon">✦</span>
             <div>
-              <strong>La démo est prête.</strong>
-              <p>Pour traduire tes propres scans ou liens, active le moteur de traduction une seule fois.</p>
+              <strong>Dernière étape de mise en ligne</strong>
+              <p>Relie gratuitement Cloudflare une seule fois, puis les vrais scans seront traduits.</p>
             </div>
-            <button id="activateEngineBtn" type="button">Activer</button>
+            <button id="setupHelpBtn" type="button">Voir</button>
           </div>
 
           <div class="options-grid">
@@ -119,7 +119,6 @@
             <span>Traduire en français</span>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
           </button>
-          <button id="demoBtn" class="text-btn">Essayer avec la page démo</button>
         </section>
 
         <section id="processingCard" class="processing-card panel" hidden aria-live="polite">
@@ -214,15 +213,9 @@
         </section>
 
         <section class="settings-section engine-settings">
-          <div class="setting-title"><strong>Moteur de traduction</strong><span id="engineSettingStatus">Mode démo</span></div>
-          <p class="dialog-copy">La démo fonctionne directement. Pour traduire tes propres scans, connecte une seule fois le moteur fourni dans le dossier <strong>worker</strong>.</p>
-          <label class="field-label" for="apiUrlInput">Adresse du moteur</label>
-          <input id="apiUrlInput" class="dialog-input" type="url" placeholder="https://scanmood-api.votre-nom.workers.dev" />
-          <p id="settingsMessage" class="settings-message" aria-live="polite"></p>
-          <div class="dialog-actions">
-            <button id="clearApiBtn" type="button" class="text-btn danger">Retirer</button>
-            <button id="saveApiBtn" type="button" class="primary-btn compact">Connecter</button>
-          </div>
+          <div class="setting-title"><strong>Traduction réelle</strong><span id="engineSettingStatus">À configurer</span></div>
+          <p id="settingsMessage" class="dialog-copy">Le moteur utilise Cloudflare Workers AI. Il n’y a aucune clé OpenAI et aucun abonnement à prendre.</p>
+          <div class="engine-info"><span>✦</span><div><strong>Offre gratuite Cloudflare</strong><small>Si le quota du jour est épuisé, l’app te demandera simplement de réessayer demain.</small></div></div>
         </section>
       </form>
     </dialog>

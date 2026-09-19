@@ -7,7 +7,7 @@ const state = {
   files: [],
   pages: [],
   currentPage: 0,
-  apiBase: localStorage.getItem("scanmood_api") || window.SCANMOOD_CONFIG?.apiBase || "",
+  apiBase: String(window.SCANMOOD_CONFIG?.apiBase || "").trim().replace(/\/$/, ""),
   theme: localStorage.getItem("scanmood_theme") || "light",
   readerMode: false,
   zoom: 1,
@@ -21,7 +21,7 @@ const elements = {
   processingTitle: $("#processingTitle"), processingMeta: $("#processingMeta"), result: $("#resultSection"), resultTitle: $("#resultTitle"), resultMeta: $("#resultMeta"),
   originalImage: $("#originalImage"), canvas: $("#translatedCanvas"), translatedLayer: $("#translatedLayer"), viewerStage: $("#viewerStage"), stagePage: $("#stagePage"),
   pageNav: $("#pageNav"), pageCount: $("#pageCount"), regionList: $("#regionList"), apiStatus: $("#apiStatus"), toast: $("#toast"),
-  settings: $("#settingsDialog"), apiUrlInput: $("#apiUrlInput"), settingsMessage: $("#settingsMessage"), compareRange: $("#compareRange"), compareHandle: $("#compareHandle"),
+  settings: $("#settingsDialog"), settingsMessage: $("#settingsMessage"), compareRange: $("#compareRange"), compareHandle: $("#compareHandle"),
   readerBtn: $("#readerBtn"), zoomLabel: $("#zoomLabel"),
 };
 
@@ -35,9 +35,9 @@ function toast(message) {
 function updateApiStatus() {
   const live = Boolean(state.apiBase);
   elements.apiStatus.classList.toggle("live", live);
-  $("span", elements.apiStatus).textContent = live ? "IA connectée" : "Mode démo";
+  $("span", elements.apiStatus).textContent = live ? "Moteur gratuit actif" : "À configurer";
   $("#engineBanner")?.classList.toggle("connected", live);
-  $("#engineSettingStatus").textContent = live ? "Connecté" : "Mode démo";
+  $("#engineSettingStatus").textContent = live ? "Actif" : "À configurer";
 }
 
 function applyTheme(theme) {
@@ -150,7 +150,7 @@ async function buildPagesFromFiles() {
 }
 
 async function fetchRemoteFile(url) {
-  if (!state.apiBase) throw new Error("Connecte le service IA pour importer un lien.");
+  if (!state.apiBase) throw new Error("La configuration Cloudflare n’est pas encore terminée.");
   const response = await fetch(`${state.apiBase}/fetch`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) });
   if (!response.ok) throw new Error((await safeJson(response))?.error || "Impossible de récupérer ce lien.");
   const blob = await response.blob();
@@ -175,7 +175,6 @@ function startProgress() {
 }
 
 async function translatePage(page, index, total) {
-  if (!state.apiBase) return demoRegions(page, index);
   setProcessing(`Traduction de la page ${index + 1}/${total}…`, "Le sens, le ton et les personnages sont analysés ensemble", 25 + ((index + .25) / total) * 65);
   const response = await fetch(`${state.apiBase}/translate`, {
     method: "POST",
@@ -194,39 +193,37 @@ async function translatePage(page, index, total) {
   return page.regions;
 }
 
-async function runTranslation({ demo = false } = {}) {
-  if (!demo && !state.apiBase) {
-    openSettings("Pour traduire un vrai scan, connecte d’abord le moteur de traduction. La page démo, elle, fonctionne sans connexion.");
+async function runTranslation() {
+  if (!state.apiBase) {
+    openSettings("La vraie traduction sera disponible dès que l’adresse Cloudflare aura été ajoutée dans config.js sur GitHub.");
     return;
   }
   elements.result.hidden = true;
   elements.processing.hidden = false;
   startProgress();
   try {
-    if (demo) state.pages = [await makeDemoPage()];
-    else {
-      if (state.sourceMode === "link") {
-        const file = await fetchRemoteFile(elements.urlInput.value.trim());
-        state.files = [file];
-      }
-      state.pages = await buildPagesFromFiles();
+    if (state.sourceMode === "link") {
+      const file = await fetchRemoteFile(elements.urlInput.value.trim());
+      state.files = [file];
     }
+    state.pages = await buildPagesFromFiles();
     if (!state.pages.length) throw new Error("Aucune page à traduire.");
-    if (!demo) {
-      for (let i = 0; i < state.pages.length; i++) await translatePage(state.pages[i], i, state.pages.length);
-    }
+    for (let i = 0; i < state.pages.length; i++) await translatePage(state.pages[i], i, state.pages.length);
     clearInterval(state.progressTimer);
     setProcessing("Traduction terminée", "Mise en page du français dans les bulles", 100);
     state.currentPage = 0;
+    elements.viewerStage.dataset.view = "translated";
+    $$('[data-view]').forEach(button => button.classList.toggle("active", button.dataset.view === "translated"));
+    elements.processing.hidden = true;
+    elements.result.hidden = false;
+    await new Promise(resolve => requestAnimationFrame(resolve));
     await renderCurrentPage();
-    setTimeout(() => {
-      elements.processing.hidden = true;
-      elements.result.hidden = false;
-      toggleReaderMode(true);
-    }, 420);
+    toggleReaderMode(true);
+    requestAnimationFrame(syncStageSize);
   } catch (error) {
     clearInterval(state.progressTimer);
     elements.processing.hidden = true;
+    elements.result.hidden = true;
     toast(error.message || "Une erreur est survenue.");
   }
 }
@@ -388,45 +385,6 @@ function updateZoom(delta = 0) {
   syncStageSize();
 }
 
-async function makeDemoPage() {
-  const canvas = document.createElement("canvas");
-  canvas.width = 920; canvas.height = 1240;
-  const ctx = canvas.getContext("2d");
-  ctx.fillStyle = "#f7f7f5"; ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.strokeStyle = "#17171b"; ctx.lineWidth = 10;
-  ctx.fillStyle = "#d8d8dc"; ctx.fillRect(44, 44, 832, 530); ctx.strokeRect(44, 44, 832, 530);
-  ctx.fillStyle = "#a9aab1"; ctx.beginPath(); ctx.arc(460, 340, 185, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = "#efeff1"; ctx.fillRect(44, 600, 832, 596); ctx.strokeRect(44, 600, 832, 596);
-  ctx.fillStyle = "#c5c6cb"; ctx.beginPath(); ctx.moveTo(44, 1080); ctx.lineTo(430, 680); ctx.lineTo(876, 1080); ctx.closePath(); ctx.fill();
-  drawBubble(ctx, 88, 88, 350, 180, "もう逃げない。\n今度は私が守る。", 31);
-  drawBubble(ctx, 520, 440, 300, 145, "本気なのか？", 35);
-  drawBubble(ctx, 126, 850, 350, 165, "ああ。\n約束する。", 35);
-  ctx.save(); ctx.translate(742, 780); ctx.rotate(-.15); ctx.fillStyle = "#111"; ctx.font = "900 58px sans-serif"; ctx.fillText("ドン", 0, 0); ctx.restore();
-  const dataUrl = canvas.toDataURL("image/jpeg", .93);
-  return { name: "Page démo", dataUrl, detectedLanguage: "japanese", regions: demoRegionsRaw() };
-}
-
-function drawBubble(ctx, x, y, w, h, text, size) {
-  ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = "#111"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.font = `700 ${size}px sans-serif`;
-  text.split("\n").forEach((line, i, lines) => ctx.fillText(line, x + w / 2, y + h / 2 + (i - (lines.length - 1) / 2) * size * 1.25));
-}
-
-function demoRegionsRaw() {
-  return [
-    { x: 110, y: 86, w: 335, h: 135, original: "もう逃げない。今度は私が守る。", translation: "Je ne fuirai plus. Cette fois, c’est moi qui te protégerai.", kind: "speech", treatment: "clean" },
-    { x: 573, y: 370, w: 275, h: 105, original: "本気なのか？", translation: "Tu es vraiment sérieux ?", kind: "speech", treatment: "clean" },
-    { x: 150, y: 688, w: 345, h: 132, original: "ああ。約束する。", translation: "Oui. Je te le promets.", kind: "speech", treatment: "clean" },
-    { x: 765, y: 610, w: 155, h: 95, original: "ドン", translation: "BAM", kind: "sfx", treatment: "blur" },
-  ];
-}
-
-function demoRegions(page) {
-  page.detectedLanguage = "japanese";
-  page.regions = page.regions?.length ? page.regions : demoRegionsRaw();
-  return page.regions;
-}
-
 async function downloadResult() {
   if (!state.pages.length) return;
   if (state.pages.length === 1) {
@@ -476,13 +434,17 @@ elements.dropZone.addEventListener("dragover", event => { event.preventDefault()
 elements.dropZone.addEventListener("dragleave", () => elements.dropZone.classList.remove("dragover"));
 elements.dropZone.addEventListener("drop", event => { event.preventDefault(); elements.dropZone.classList.remove("dragover"); selectFiles(event.dataTransfer.files); });
 elements.translateBtn.addEventListener("click", () => runTranslation());
-$("#demoBtn").addEventListener("click", () => runTranslation({ demo: true }));
 $("#newScanBtn").addEventListener("click", () => { toggleReaderMode(false); elements.result.hidden = true; elements.sourceCard.scrollIntoView({ behavior: "smooth", block: "start" }); });
 
 // Résultats
 $$('[data-view]').forEach(button => button.addEventListener("click", () => {
   $$('[data-view]').forEach(item => item.classList.toggle("active", item === button));
   elements.viewerStage.dataset.view = button.dataset.view;
+  if (button.dataset.view === "compare") {
+    const value = Number(elements.compareRange.value);
+    elements.translatedLayer.style.clipPath = `inset(0 ${100 - value}% 0 0)`;
+    elements.compareHandle.style.left = `${value}%`;
+  }
 }));
 elements.compareRange.addEventListener("input", () => {
   const value = Number(elements.compareRange.value);
@@ -500,21 +462,14 @@ window.addEventListener("resize", syncStageSize);
 
 // Réglages
 function openSettings(message = "") {
-  elements.apiUrlInput.value = state.apiBase;
-  elements.settingsMessage.textContent = message;
+  elements.settingsMessage.textContent = message || (state.apiBase
+    ? "Le moteur gratuit Cloudflare est actif. Tu peux importer un vrai scan ou un lien direct vers une image/PDF."
+    : "La vraie traduction sera disponible dès que l’adresse Cloudflare aura été ajoutée dans config.js sur GitHub.");
   elements.settings.showModal();
 }
 $("#settingsBtn").addEventListener("click", () => openSettings());
-$("#activateEngineBtn").addEventListener("click", () => openSettings("Suis le guide du README pour obtenir cette adresse, puis colle-la ici."));
+$("#setupHelpBtn").addEventListener("click", () => openSettings("Suis le guide ÉTAPES_CLOUDFLARE.md du ZIP. Aucun paiement et aucune clé OpenAI ne sont demandés."));
 $$('[data-theme-choice]').forEach(button => button.addEventListener("click", () => applyTheme(button.dataset.themeChoice)));
-$("#saveApiBtn").addEventListener("click", () => {
-  const value = elements.apiUrlInput.value.trim().replace(/\/$/, "");
-  if (value && !/^https:\/\//i.test(value)) { elements.settingsMessage.textContent = "L’adresse doit commencer par https://"; return; }
-  state.apiBase = value;
-  if (value) localStorage.setItem("scanmood_api", value); else localStorage.removeItem("scanmood_api");
-  updateApiStatus(); elements.settings.close(); toast(value ? "Service IA connecté" : "Mode démo activé");
-});
-$("#clearApiBtn").addEventListener("click", () => { elements.apiUrlInput.value = ""; state.apiBase = ""; localStorage.removeItem("scanmood_api"); updateApiStatus(); elements.settings.close(); toast("Service retiré"); });
 
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
   navigator.serviceWorker.register("./sw.js", { updateViaCache: "none" }).then(registration => registration.update()).catch(() => {});

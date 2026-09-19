@@ -173,6 +173,11 @@ footer span:first-child { color: var(--ink); font-weight: 760; }
 .setting-title { margin-bottom: 12px; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .setting-title strong { font-size: .96rem; }
 .setting-title span { color: var(--muted); font-size: .78rem; }
+.engine-info { padding: 14px; display: flex; align-items: flex-start; gap: 11px; border: 1px solid var(--line); border-radius: 15px; background: #fafafd; }
+.engine-info > span { width: 34px; height: 34px; flex: 0 0 34px; display: grid; place-items: center; border-radius: 11px; color: #fff; background: var(--accent); }
+.engine-info strong, .engine-info small { display: block; }
+.engine-info strong { font-size: .87rem; }
+.engine-info small { margin-top: 4px; color: var(--muted); font-size: .76rem; line-height: 1.4; }
 .theme-switch { padding: 4px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px; border-radius: 15px; background: #f0f1f4; }
 .theme-switch button { min-height: 46px; border: 0; border-radius: 12px; color: var(--muted); background: transparent; font-weight: 690; }
 .theme-switch button.active { color: var(--ink); background: var(--card); box-shadow: 0 5px 16px rgba(0,0,0,.09); }
@@ -201,6 +206,7 @@ html[data-theme="dark"] .panel { border-color: var(--line); }
 html[data-theme="dark"] .source-tabs, html[data-theme="dark"] .view-switch, html[data-theme="dark"] .theme-switch { background: #111719; }
 html[data-theme="dark"] .source-tab.active, html[data-theme="dark"] .view-switch button.active { background: #263034; }
 html[data-theme="dark"] .drop-zone, html[data-theme="dark"] .url-field, html[data-theme="dark"] .options-grid label, html[data-theme="dark"] .region-item, html[data-theme="dark"] .dialog-input { color: var(--ink); background: #12191c; }
+html[data-theme="dark"] .engine-info { background: #12191c; }
 html[data-theme="dark"] .field-label, html[data-theme="dark"] .options-grid label > span { color: #d8dde0; }
 html[data-theme="dark"] .engine-banner { border-color: #453d7b; background: #211e38; }
 html[data-theme="dark"] .secondary-btn, html[data-theme="dark"] .reader-btn, html[data-theme="dark"] .page-nav button { color: var(--ink); background: #20292d; }

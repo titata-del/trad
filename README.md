@@ -1,56 +1,50 @@
-# ScanMood 1.2
+# ScanMood 2.0 — vraie traduction gratuite
 
-Application web installable sur iPhone pour traduire des scans anglais, japonais ou chinois vers le français, en conservant le ton de la scène. La traduction remplace le texte original dans les bulles et peut être corrigée avant téléchargement.
+Application web installable sur iPhone pour traduire des scans anglais, japonais ou chinois vers le français, en conservant le ton de la scène.
 
-## Ce qui est prêt
+## Ce qui change dans cette version
 
-- écran de verrouillage type iPhone, code `071079` ;
-- import JPG, PNG, WEBP et PDF (jusqu’à 12 pages) ;
-- import par lien public direct ;
-- détection automatique anglais / japonais / chinois ;
-- styles Fidèle, Naturel et Adaptation française ;
-- remplacement intelligent : nettoyage des bulles ou flou local sur décor ;
-- vues Original, Traduit et Comparer ;
-- correction manuelle des dialogues ;
-- export JPG ou PDF ;
-- installation en PWA et fonctionnement GitHub Pages ;
-- page démo utilisable sans service IA.
+- aucun mode démo et aucune fausse traduction ;
+- aucun abonnement OpenAI et aucune clé payante ;
+- traduction réelle avec Cloudflare Workers AI ;
+- import JPG, PNG, WEBP et PDF, jusqu’à 12 pages ;
+- import par lien direct vers une image ou un PDF public ;
+- vues Original, Traduit et Comparer réparées ;
+- mode lecture plein écran plus large ;
+- thème clair ou sombre dans les réglages ;
+- correction manuelle des dialogues et export JPG/PDF ;
+- écran de verrouillage type iPhone, code `071079`.
 
-La version 1.2 ajoute un vrai mode sombre, un lecteur plein écran inspiré des sites de scans, un zoom de 50 à 200 %, et transforme la roue dentée en vrais réglages. Elle conserve les corrections iPhone du calque traduit et du comparateur.
+## Comment l’application fonctionne
 
-## 1. Mettre le site sur GitHub Pages
+GitHub Pages affiche l’application. Le petit dossier `worker` est déployé gratuitement chez Cloudflare et lit les images avec un modèle vision. L’utilisateur ne voit qu’une seule application : ScanMood.
 
-1. Crée un dépôt GitHub vide.
-2. Ajoute tous les fichiers de ce dossier puis pousse-les sur la branche `main`.
-3. Dans **Settings → Pages**, sélectionne **GitHub Actions** comme source.
-4. Le workflow présent dans `.github/workflows/pages.yml` publie automatiquement le dossier `dist`.
+```text
+iPhone / ordinateur → GitHub Pages → Worker Cloudflare gratuit → traduction française
+```
 
-Le site s’ouvre déjà et la page démo fonctionne. Pour traduire de vrais scans, installe le service ci-dessous : une clé IA ne doit jamais être copiée dans un site public GitHub Pages.
+Le quota gratuit de Cloudflare est limité. Lorsqu’il est épuisé, ScanMood affiche « limite gratuite du jour atteinte » et il suffit de réessayer le lendemain. Aucun paiement automatique n’est ajouté par ce projet.
 
-## 2. Mettre en ligne le service sécurisé
+## Installation
 
-Le dossier `worker` contient un Cloudflare Worker très léger.
+1. Publie ce dossier sur GitHub comme avant. Le workflow `.github/workflows/pages.yml` publie automatiquement `dist`.
+2. Suis le fichier `ÉTAPES_CLOUDFLARE.md` pour créer le moteur gratuit.
+3. Colle l’adresse obtenue dans `dist/config.js`, puis enregistre la modification sur GitHub.
 
-1. Copie `worker/wrangler.toml.example` vers `worker/wrangler.toml`.
-2. Remplace `ALLOWED_ORIGINS` par l’adresse exacte de ton GitHub Pages.
-3. Depuis le dossier `worker`, lance `npx wrangler deploy`.
-4. Ajoute ensuite la clé côté Worker avec `npx wrangler secret put OPENAI_API_KEY`.
-5. Dans ScanMood, ouvre l’icône Réglages et colle l’adresse HTTPS du Worker.
+Une fois ces trois étapes terminées, le bandeau « À configurer » disparaît et la traduction réelle fonctionne sur tous tes appareils.
 
-Tu peux aussi inscrire cette adresse dans `dist/config.js` pour qu’elle soit déjà configurée sur tous tes appareils.
+## Notes
 
-## Notes importantes
-
-- Le code `071079` est un écran de verrouillage visuel côté navigateur, pas une authentification forte.
-- Les images sont réduites à 2 200 px maximum avant traduction afin de limiter le temps et le coût.
-- Les liens sont limités aux images/PDF publics en HTTPS, 15 Mo maximum.
-- La qualité du remplacement dépend de la précision des zones détectées. Les traductions peuvent être corrigées dans l’app puis réappliquées.
+- Le lien importé doit être un lien direct HTTPS vers une image ou un PDF, pas l’adresse générale d’un chapitre sur un site.
+- Les images sont réduites à 2 200 px avant traduction pour économiser le quota gratuit.
+- Le code `071079` est un verrouillage visuel local, pas une protection de compte.
 - Vérifie les droits de traduction et de diffusion des scans utilisés.
 
 ## Structure
 
 ```text
-dist/                     site GitHub Pages
-worker/                   service sécurisé de traduction
-.github/workflows/        déploiement automatique GitHub Pages
+dist/                     application GitHub Pages
+worker/                   moteur Cloudflare Workers AI
+.github/workflows/        publication automatique GitHub Pages
+ÉTAPES_CLOUDFLARE.md      guide gratuit pas à pas
 ```
