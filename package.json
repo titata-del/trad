@@ -1,11 +1,13 @@
 {
   "name": "scanmood-worker",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"
   },
   "devDependencies": {
+    "@cloudflare/puppeteer": "latest",
     "wrangler": "latest"
   }
 }

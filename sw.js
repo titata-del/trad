@@ -1,4 +1,4 @@
-const CACHE = "scanmood-v2-chapter-links-history-5";
+const CACHE = "scanmood-v2-complete-fast-chapters-6";
 const APP_SHELL = ["./", "./index.html", "./styles.css", "./app.js", "./config.js", "./manifest.webmanifest", "./icon.svg"];
 
 self.addEventListener("install", event => event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(APP_SHELL)).then(() => self.skipWaiting())));

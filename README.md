@@ -9,6 +9,8 @@ Application web installable sur iPhone pour traduire des scans anglais, japonais
 - traduction réelle avec Cloudflare Workers AI ;
 - import JPG, PNG, WEBP et PDF, jusqu’à 200 pages ;
 - import par lien vers une page de chapitre, une image ou un PDF public ;
+- ouverture dynamique et défilement automatique des chapitres pour charger les pages tardives ;
+- import par groupes de 5 images et traduction de 3 pages en parallèle ;
 - historique local des 10 derniers chapitres, avec réouverture hors ligne quand le stockage de l’iPhone le permet ;
 - vues Original, Traduit et Comparer réparées ;
 - mode lecture plein écran plus large ;
@@ -27,7 +29,7 @@ GitHub Pages affiche l’application. Le petit dossier `worker` est déployé gr
 iPhone / ordinateur → GitHub Pages → Worker Cloudflare gratuit → traduction française
 ```
 
-Le quota gratuit de Cloudflare est limité. Lorsqu’il est épuisé, ScanMood affiche « limite gratuite du jour atteinte » et il suffit de réessayer le lendemain. Aucun paiement automatique n’est ajouté par ce projet.
+Le quota gratuit de Cloudflare est limité. Lorsqu’il est épuisé, ScanMood affiche « limite gratuite du jour atteinte » et il suffit de réessayer le lendemain. Le navigateur distant Cloudflare dispose aussi de 10 minutes gratuites par jour. Aucun paiement automatique n’est ajouté par ce projet.
 
 ## Installation
 

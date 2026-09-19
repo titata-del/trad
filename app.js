@@ -183,6 +183,19 @@ async function buildPagesFromFiles() {
   return pages.slice(0, MAX_PAGES);
 }
 
+async function mapConcurrent(items, concurrency, callback) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < items.length) {
+      const index = cursor++;
+      results[index] = await callback(items[index], index);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+  return results;
+}
+
 async function fetchRemoteFile(url, referer = "") {
   if (!state.apiBase) throw new Error("La configuration Cloudflare n’est pas encore terminée.");
   const response = await fetch(`${state.apiBase}/fetch`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url, referer }) });
@@ -190,6 +203,16 @@ async function fetchRemoteFile(url, referer = "") {
   const blob = await response.blob();
   const name = new URL(url).pathname.split("/").pop() || (blob.type === "application/pdf" ? "scan.pdf" : "scan.jpg");
   return new File([blob], name, { type: blob.type });
+}
+
+async function fetchRemoteFileWithRetry(url, referer = "") {
+  try {
+    return await fetchRemoteFile(url, referer);
+  } catch (firstError) {
+    await new Promise(resolve => setTimeout(resolve, 350));
+    try { return await fetchRemoteFile(url, referer); }
+    catch { throw firstError; }
+  }
 }
 
 async function inspectRemoteLink(url) {
@@ -214,19 +237,21 @@ async function buildPagesFromLink(url) {
   }
   const imageUrls = Array.isArray(chapter.images) ? chapter.images.slice(0, MAX_PAGES) : [];
   if (!imageUrls.length) throw new Error("Aucune page de scan trouvée dans ce chapitre.");
-  const pages = [];
-  let failed = 0;
-  for (let index = 0; index < imageUrls.length && pages.length < MAX_PAGES; index++) {
-    setProcessing(`Import de la page ${index + 1}/${imageUrls.length}…`, "Les pages sont préparées pour la lecture verticale", 8 + ((index + 1) / imageUrls.length) * 17);
+  let completed = 0;
+  const groups = await mapConcurrent(imageUrls, 5, async (imageUrl, index) => {
     try {
-      const file = await fetchRemoteFile(imageUrls[index], url);
-      if (!file.type.startsWith("image/")) continue;
-      const room = MAX_PAGES - pages.length;
-      pages.push(...await imageDataToPages(await fileToDataUrl(file), `Page ${index + 1}`, room));
+      const file = await fetchRemoteFileWithRetry(imageUrl, url);
+      if (!file.type.startsWith("image/")) return [];
+      return await imageDataToPages(await fileToDataUrl(file), `Page ${index + 1}`, MAX_PAGES);
     } catch {
-      failed++;
+      return [];
+    } finally {
+      completed++;
+      setProcessing(`Import de ${completed}/${imageUrls.length} pages…`, "Téléchargement accéléré par groupes de 5", 8 + (completed / imageUrls.length) * 17);
     }
-  }
+  });
+  const pages = groups.flat().slice(0, MAX_PAGES);
+  const failed = groups.filter(group => !group.length).length;
   if (!pages.length) throw new Error("Les images du chapitre sont protégées par le site et n’ont pas pu être chargées.");
   if (failed) toast(`${failed} image${failed > 1 ? "s" : ""} du site n’ont pas pu être chargées.`);
   return pages.slice(0, MAX_PAGES);
@@ -249,7 +274,6 @@ function startProgress() {
 }
 
 async function translatePage(page, index, total) {
-  setProcessing(`Traduction de la page ${index + 1}/${total}…`, "Le sens, le ton et les personnages sont analysés ensemble", 25 + ((index + .25) / total) * 65);
   const response = await fetch(`${state.apiBase}/translate`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -286,27 +310,40 @@ async function runTranslation() {
     let translatedCount = 0;
     let failedCount = 0;
     let firstError = "";
-    for (let i = 0; i < state.pages.length; i++) {
-      try {
-        await translatePage(state.pages[i], i, state.pages.length);
-        state.pages[i].translationError = "";
-        state.pages[i].translatedDataUrl = "";
-        translatedCount++;
-      } catch (pageError) {
-        const message = pageError?.message || "Cette page n’a pas pu être traduite.";
-        state.pages[i].translationError = message;
-        state.pages[i].regions = [];
-        failedCount++;
-        firstError ||= message;
-        if (/limite gratuite|quota|allocation/i.test(message)) {
-          for (let rest = i + 1; rest < state.pages.length; rest++) {
-            state.pages[rest].translationError = "Limite gratuite atteinte avant cette page.";
-            state.pages[rest].regions = [];
-            failedCount++;
-          }
-          break;
+    let nextPage = 0;
+    let completedTranslations = 0;
+    let quotaReached = false;
+    const attempted = new Set();
+    async function translationWorker() {
+      while (!quotaReached && nextPage < state.pages.length) {
+        const i = nextPage++;
+        attempted.add(i);
+        try {
+          await translatePage(state.pages[i], i, state.pages.length);
+          state.pages[i].translationError = "";
+          state.pages[i].translatedDataUrl = "";
+          translatedCount++;
+        } catch (pageError) {
+          const message = pageError?.message || "Cette page n’a pas pu être traduite.";
+          state.pages[i].translationError = message;
+          state.pages[i].regions = [];
+          failedCount++;
+          firstError ||= message;
+          if (/limite gratuite|quota|allocation/i.test(message)) quotaReached = true;
+        } finally {
+          completedTranslations++;
+          setProcessing(`Traduction rapide · ${completedTranslations}/${state.pages.length} pages`, "Jusqu’à 3 pages sont analysées en même temps", 25 + (completedTranslations / state.pages.length) * 65);
         }
       }
+    }
+    await Promise.all(Array.from({ length: Math.min(3, state.pages.length) }, () => translationWorker()));
+    if (quotaReached) {
+      state.pages.forEach((page, index) => {
+        if (attempted.has(index)) return;
+        page.translationError = "Limite gratuite atteinte avant cette page.";
+        page.regions = [];
+        failedCount++;
+      });
     }
     if (!translatedCount) throw new Error(firstError || "La traduction a échoué.");
     clearInterval(state.progressTimer);

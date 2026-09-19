@@ -1,3 +1,5 @@
+import puppeteer from "@cloudflare/puppeteer";
+
 const json = (data, status = 200, origin = "*") => new Response(JSON.stringify(data), {
   status,
   headers: { "Content-Type": "application/json; charset=utf-8", ...cors(origin) },
@@ -110,11 +112,55 @@ function extractChapterImages(html, pageUrl) {
   return found.slice(0, 200);
 }
 
+async function renderDynamicChapter(url, env) {
+  if (!env.BROWSER) return null;
+  let browser;
+  try {
+    browser = await puppeteer.launch(env.BROWSER);
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 1600, deviceScaleFactor: 1 });
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.evaluate(async () => {
+      let previousHeight = 0;
+      let stable = 0;
+      for (let step = 0; step < 90 && stable < 5; step++) {
+        const height = Math.max(document.body?.scrollHeight || 0, document.documentElement?.scrollHeight || 0);
+        window.scrollTo(0, Math.min(height, window.scrollY + 1450));
+        await new Promise(resolve => setTimeout(resolve, 180));
+        const nextHeight = Math.max(document.body?.scrollHeight || 0, document.documentElement?.scrollHeight || 0);
+        const atBottom = window.scrollY + window.innerHeight >= nextHeight - 80;
+        stable = atBottom && nextHeight === previousHeight ? stable + 1 : 0;
+        previousHeight = nextHeight;
+      }
+      window.scrollTo(0, document.documentElement.scrollHeight);
+      await new Promise(resolve => setTimeout(resolve, 650));
+    });
+    const result = await page.evaluate(() => ({
+      title: document.title || "",
+      html: document.documentElement.outerHTML,
+      resources: performance.getEntriesByType("resource")
+        .filter(entry => entry.initiatorType === "img" || /\.(?:jpe?g|png|webp|avif)(?:[?#]|$)/i.test(entry.name))
+        .map(entry => entry.name),
+    }));
+    return result;
+  } catch {
+    return null;
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+  }
+}
+
 async function inspectChapter(request, env, origin) {
   const body = await request.json();
   if (!body?.url) return json({ error: "Lien du chapitre manquant." }, 400, origin);
   const upstream = await safeFetch(body.url, { accept: "text/html,application/xhtml+xml,image/avif,image/webp,image/png,image/jpeg,application/pdf,*/*;q=0.7" });
   if (!upstream.ok) {
+    const rendered = await renderDynamicChapter(body.url, env);
+    if (rendered?.html) {
+      const renderedHtml = `${rendered.html}\n${(rendered.resources || []).map(url => `<img data-src="${url}">`).join("\n")}`;
+      const images = extractChapterImages(renderedHtml, body.url);
+      if (images.length) return json({ kind: "chapter", title: chapterTitle(renderedHtml, rendered.title || "Chapitre importé"), images, completeScan: true }, 200, origin);
+    }
     const blocked = [401, 403, 429].includes(upstream.status);
     return json({ error: blocked ? "Ce site bloque l’import automatique. Essaie un autre site ou un lien direct." : "La page du chapitre n’est pas accessible." }, 400, origin);
   }
@@ -125,9 +171,14 @@ async function inspectChapter(request, env, origin) {
   if (announcedSize > 4 * 1024 * 1024) return json({ error: "La page du chapitre est trop lourde à analyser." }, 413, origin);
   const html = await upstream.text();
   if (html.length > 4 * 1024 * 1024) return json({ error: "La page du chapitre est trop lourde à analyser." }, 413, origin);
-  const images = extractChapterImages(html, body.url);
+  let rendered = null;
+  if (env.BROWSER) rendered = await renderDynamicChapter(body.url, env);
+  const renderedHtml = rendered?.html
+    ? `${rendered.html}\n${(rendered.resources || []).map(url => `<img data-src="${url}">`).join("\n")}`
+    : "";
+  const images = extractChapterImages(renderedHtml || html, body.url);
   if (!images.length) return json({ error: "Aucune page de scan trouvée. Le site charge peut-être les images de façon protégée." }, 422, origin);
-  return json({ kind: "chapter", title: chapterTitle(html, "Chapitre importé"), images }, 200, origin);
+  return json({ kind: "chapter", title: chapterTitle(renderedHtml || html, rendered?.title || "Chapitre importé"), images, completeScan: Boolean(renderedHtml) }, 200, origin);
 }
 
 function translationPrompt(language, style) {
