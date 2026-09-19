@@ -8,5 +8,4 @@ binding = "AI"
 [vars]
 AI_MODEL = "@cf/google/gemma-4-26b-a4b-it"
 AI_FALLBACK_MODEL = "@cf/llava-hf/llava-1.5-7b-hf"
-# Remplace par l’origine exacte de ton GitHub Pages, sans le chemin du dépôt.
-ALLOWED_ORIGINS = "https://votre-nom.github.io"
+ALLOWED_ORIGINS = "https://titata-del.github.io"

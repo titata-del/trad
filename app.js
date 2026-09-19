@@ -1,5 +1,6 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+const MAX_PAGES = 200;
 
 const state = {
   pin: "",
@@ -12,6 +13,7 @@ const state = {
   readerMode: false,
   zoom: 1,
   progressTimer: null,
+  readerObserver: null,
 };
 
 const elements = {
@@ -19,7 +21,7 @@ const elements = {
   fileInput: $("#fileInput"), dropZone: $("#dropZone"), dropTitle: $("#dropTitle"), dropMeta: $("#dropMeta"), urlInput: $("#urlInput"),
   translateBtn: $("#translateBtn"), sourceCard: $("#sourceCard"), processing: $("#processingCard"), progress: $("#progressBar"),
   processingTitle: $("#processingTitle"), processingMeta: $("#processingMeta"), result: $("#resultSection"), resultTitle: $("#resultTitle"), resultMeta: $("#resultMeta"),
-  originalImage: $("#originalImage"), canvas: $("#translatedCanvas"), translatedLayer: $("#translatedLayer"), viewerStage: $("#viewerStage"), stagePage: $("#stagePage"),
+  originalImage: $("#originalImage"), canvas: $("#translatedCanvas"), translatedLayer: $("#translatedLayer"), viewerStage: $("#viewerStage"), stagePage: $("#stagePage"), readerStack: $("#readerStack"),
   pageNav: $("#pageNav"), pageCount: $("#pageCount"), regionList: $("#regionList"), apiStatus: $("#apiStatus"), toast: $("#toast"),
   settings: $("#settingsDialog"), settingsMessage: $("#settingsMessage"), compareRange: $("#compareRange"), compareHandle: $("#compareHandle"),
   readerBtn: $("#readerBtn"), zoomLabel: $("#zoomLabel"),
@@ -114,14 +116,39 @@ async function imageDataToPage(dataUrl, name) {
   canvas.width = Math.round(image.naturalWidth * scale);
   canvas.height = Math.round(image.naturalHeight * scale);
   canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
-  return { name, dataUrl: canvas.toDataURL("image/jpeg", .9), originalImage: image, regions: [] };
+  return canvasToPage(canvas, name);
 }
 
-async function pdfToPages(file) {
+function canvasToPage(canvas, name) {
+  return { name, dataUrl: canvas.toDataURL("image/jpeg", .9), width: canvas.width, height: canvas.height, regions: [], translatedDataUrl: "", translationError: "" };
+}
+
+async function imageDataToPages(dataUrl, name, limit) {
+  const image = await loadImage(dataUrl);
+  if (image.naturalHeight <= image.naturalWidth * 2.5) return [await imageDataToPage(dataUrl, name)];
+
+  const scale = Math.min(1, 2200 / image.naturalWidth);
+  const sourceSliceHeight = Math.max(1, Math.floor(2200 / scale));
+  const count = Math.min(limit, Math.ceil(image.naturalHeight / sourceSliceHeight));
+  const pages = [];
+  for (let index = 0; index < count; index++) {
+    const sourceY = index * sourceSliceHeight;
+    const sourceHeight = Math.min(sourceSliceHeight, image.naturalHeight - sourceY);
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(image.naturalWidth * scale);
+    canvas.height = Math.round(sourceHeight * scale);
+    canvas.getContext("2d").drawImage(image, 0, sourceY, image.naturalWidth, sourceHeight, 0, 0, canvas.width, canvas.height);
+    pages.push(canvasToPage(canvas, `${name} · partie ${index + 1}`));
+  }
+  if (Math.ceil(image.naturalHeight / sourceSliceHeight) > limit) toast(`Cette longue image dépasse la limite de ${MAX_PAGES} parties.`);
+  return pages;
+}
+
+async function pdfToPages(file, limit = MAX_PAGES) {
   const pdfjs = await import("https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.8.69/pdf.min.mjs");
   pdfjs.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.8.69/pdf.worker.min.mjs";
   const pdf = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
-  const count = Math.min(pdf.numPages, 12);
+  const count = Math.min(pdf.numPages, limit);
   const pages = [];
   for (let number = 1; number <= count; number++) {
     setProcessing(`Préparation de la page ${number}/${count}…`, "Conversion du PDF en image nette", 8 + (number / count) * 17);
@@ -135,18 +162,18 @@ async function pdfToPages(file) {
     const dataUrl = canvas.toDataURL("image/jpeg", .9);
     pages.push(await imageDataToPage(dataUrl, `${file.name} · page ${number}`));
   }
-  if (pdf.numPages > 12) toast("La V1 traduit les 12 premières pages du PDF.");
+  if (pdf.numPages > limit) toast(`Cet import dépasse la limite totale de ${MAX_PAGES} pages. Fais un second PDF pour la suite.`);
   return pages;
 }
 
 async function buildPagesFromFiles() {
   const pages = [];
   for (const file of state.files) {
-    if (file.type === "application/pdf") pages.push(...await pdfToPages(file));
-    else pages.push(await imageDataToPage(await fileToDataUrl(file), file.name));
-    if (pages.length >= 12) break;
+    if (file.type === "application/pdf") pages.push(...await pdfToPages(file, MAX_PAGES - pages.length));
+    else pages.push(...await imageDataToPages(await fileToDataUrl(file), file.name, MAX_PAGES - pages.length));
+    if (pages.length >= MAX_PAGES) break;
   }
-  return pages.slice(0, 12);
+  return pages.slice(0, MAX_PAGES);
 }
 
 async function fetchRemoteFile(url) {
@@ -208,7 +235,32 @@ async function runTranslation() {
     }
     state.pages = await buildPagesFromFiles();
     if (!state.pages.length) throw new Error("Aucune page à traduire.");
-    for (let i = 0; i < state.pages.length; i++) await translatePage(state.pages[i], i, state.pages.length);
+    let translatedCount = 0;
+    let failedCount = 0;
+    let firstError = "";
+    for (let i = 0; i < state.pages.length; i++) {
+      try {
+        await translatePage(state.pages[i], i, state.pages.length);
+        state.pages[i].translationError = "";
+        state.pages[i].translatedDataUrl = "";
+        translatedCount++;
+      } catch (pageError) {
+        const message = pageError?.message || "Cette page n’a pas pu être traduite.";
+        state.pages[i].translationError = message;
+        state.pages[i].regions = [];
+        failedCount++;
+        firstError ||= message;
+        if (/limite gratuite|quota|allocation/i.test(message)) {
+          for (let rest = i + 1; rest < state.pages.length; rest++) {
+            state.pages[rest].translationError = "Limite gratuite atteinte avant cette page.";
+            state.pages[rest].regions = [];
+            failedCount++;
+          }
+          break;
+        }
+      }
+    }
+    if (!translatedCount) throw new Error(firstError || "La traduction a échoué.");
     clearInterval(state.progressTimer);
     setProcessing("Traduction terminée", "Mise en page du français dans les bulles", 100);
     state.currentPage = 0;
@@ -218,8 +270,10 @@ async function runTranslation() {
     elements.result.hidden = false;
     await new Promise(resolve => requestAnimationFrame(resolve));
     await renderCurrentPage();
+    buildReaderStack();
     toggleReaderMode(true);
     requestAnimationFrame(syncStageSize);
+    if (failedCount) toast(`${translatedCount} page${translatedCount > 1 ? "s" : ""} traduite${translatedCount > 1 ? "s" : ""}, ${failedCount} à réessayer.`);
   } catch (error) {
     clearInterval(state.progressTimer);
     elements.processing.hidden = true;
@@ -244,6 +298,115 @@ function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
 function loadImage(src) { return new Promise((resolve, reject) => { const image = new Image(); image.onload = () => resolve(image); image.onerror = reject; image.src = src; }); }
 async function safeJson(response) { try { return await response.json(); } catch { return null; } }
 
+async function renderPageDataUrl(page) {
+  if (page.translatedDataUrl) return page.translatedDataUrl;
+  if (!page.regions.length) {
+    page.translatedDataUrl = page.dataUrl;
+    return page.translatedDataUrl;
+  }
+  const image = await loadImage(page.dataUrl);
+  const canvas = document.createElement("canvas");
+  canvas.width = image.naturalWidth;
+  canvas.height = image.naturalHeight;
+  page.width = canvas.width;
+  page.height = canvas.height;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(image, 0, 0);
+  for (const region of page.regions) drawRegion(ctx, canvas, region);
+  page.translatedDataUrl = canvas.toDataURL("image/jpeg", .9);
+  canvas.width = 1;
+  canvas.height = 1;
+  return page.translatedDataUrl;
+}
+
+function buildReaderStack() {
+  state.readerObserver?.disconnect();
+  elements.readerStack.innerHTML = "";
+  const fragment = document.createDocumentFragment();
+
+  state.pages.forEach((page, index) => {
+    const card = document.createElement("article");
+    card.className = "reader-page";
+    card.dataset.index = String(index);
+    card.innerHTML = `
+      <div class="reader-page-frame">
+        <img class="reader-original" alt="Page ${index + 1} originale" decoding="async" />
+        <div class="reader-translated-layer"><img class="reader-translated" alt="Page ${index + 1} traduite" decoding="async" /></div>
+        <input class="reader-compare-range" type="range" min="0" max="100" value="52" aria-label="Comparer la page ${index + 1}" />
+        <span class="reader-compare-handle" aria-hidden="true"></span>
+        <p class="reader-page-error" hidden></p>
+      </div>`;
+    const frame = $(".reader-page-frame", card);
+    const ratioWidth = page.width || 3;
+    const ratioHeight = page.height || 4;
+    frame.style.aspectRatio = `${ratioWidth} / ${ratioHeight}`;
+    if (page.translationError) {
+      const error = $(".reader-page-error", card);
+      error.textContent = `Page ${index + 1} non traduite · ${page.translationError}`;
+      error.hidden = false;
+    }
+    const range = $(".reader-compare-range", card);
+    range.addEventListener("input", () => setReaderCompare(card, Number(range.value)));
+    setReaderCompare(card, 52);
+    fragment.appendChild(card);
+  });
+
+  elements.readerStack.appendChild(fragment);
+  state.readerObserver = new IntersectionObserver(entries => {
+    entries.forEach(entry => {
+      entry.target.dataset.near = String(entry.isIntersecting);
+      if (entry.isIntersecting) loadReaderCard(entry.target);
+      else unloadReaderCard(entry.target);
+    });
+  }, { root: elements.viewerStage, rootMargin: "1400px 0px", threshold: .01 });
+  $$(".reader-page", elements.readerStack).forEach(card => state.readerObserver.observe(card));
+  syncReaderPageSizes();
+}
+
+function setReaderCompare(card, value) {
+  const layer = $(".reader-translated-layer", card);
+  const handle = $(".reader-compare-handle", card);
+  if (layer) layer.style.clipPath = `inset(0 ${100 - value}% 0 0)`;
+  if (handle) handle.style.left = `${value}%`;
+}
+
+async function loadReaderCard(card) {
+  if (card.dataset.loading === "true" || card.dataset.loaded === "true") return;
+  const page = state.pages[Number(card.dataset.index)];
+  if (!page) return;
+  card.dataset.loading = "true";
+  try {
+    const translated = await renderPageDataUrl(page);
+    if (card.dataset.near !== "true" || !card.isConnected) return;
+    $(".reader-original", card).src = page.dataUrl;
+    $(".reader-translated", card).src = translated;
+    card.dataset.loaded = "true";
+  } catch {
+    const error = $(".reader-page-error", card);
+    error.textContent = `Page ${Number(card.dataset.index) + 1} impossible à afficher.`;
+    error.hidden = false;
+  } finally {
+    card.dataset.loading = "false";
+  }
+}
+
+function unloadReaderCard(card) {
+  if (card.dataset.loaded !== "true") return;
+  $(".reader-original", card).removeAttribute("src");
+  $(".reader-translated", card).removeAttribute("src");
+  card.dataset.loaded = "false";
+}
+
+function syncReaderPageSizes() {
+  if (!state.readerMode || !elements.readerStack.children.length) return;
+  const available = Math.max(1, elements.viewerStage.clientWidth - (window.innerWidth <= 680 ? 0 : 36));
+  $$(".reader-page", elements.readerStack).forEach(card => {
+    const page = state.pages[Number(card.dataset.index)];
+    const natural = page?.width || available;
+    card.style.width = `${Math.round(Math.min(natural, available) * state.zoom)}px`;
+  });
+}
+
 async function renderCurrentPage() {
   const page = state.pages[state.currentPage];
   if (!page) return;
@@ -253,7 +416,8 @@ async function renderCurrentPage() {
   elements.pageCount.textContent = `Page ${state.currentPage + 1} sur ${state.pages.length}`;
   $("#prevPage").disabled = state.currentPage === 0;
   $("#nextPage").disabled = state.currentPage === state.pages.length - 1;
-  elements.resultTitle.textContent = state.pages.length > 1 ? `${state.pages.length} pages traduites` : "Page traduite";
+  const translatedPages = state.pages.filter(item => !item.translationError).length;
+  elements.resultTitle.textContent = state.pages.length > 1 ? `${translatedPages}/${state.pages.length} pages traduites` : "Page traduite";
   const language = languageLabel(page.detectedLanguage || $("#languageSelect").value);
   const style = $("#styleSelect").selectedOptions[0].textContent.split("·")[0].trim().toLowerCase();
   elements.resultMeta.textContent = `${language} → Français · ton ${style}`;
@@ -273,6 +437,7 @@ async function drawTranslation(page) {
   const image = await loadImage(page.dataUrl);
   const canvas = elements.canvas;
   canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+  page.width = canvas.width; page.height = canvas.height;
   const ctx = canvas.getContext("2d");
   ctx.drawImage(image, 0, 0);
   for (const region of page.regions) drawRegion(ctx, canvas, region);
@@ -354,6 +519,7 @@ function kindLabel(kind) { return ({ speech: "Dialogue", thought: "Pensée", nar
 function languageLabel(language) { return ({ english: "Anglais", japanese: "Japonais", chinese: "Chinois", auto: "Langue détectée" })[language] || "Langue détectée"; }
 
 function syncStageSize() {
+  syncReaderPageSizes();
   if (!elements.canvas.width || !elements.canvas.height) return;
   const padding = state.readerMode ? 0 : (window.innerWidth <= 680 ? 16 : 44);
   const available = Math.max(1, elements.viewerStage.clientWidth - padding);
@@ -375,6 +541,17 @@ function toggleReaderMode(force) {
   elements.readerBtn.setAttribute("aria-pressed", String(state.readerMode));
   $("span", elements.readerBtn).textContent = state.readerMode ? "Quitter" : "Mode lecture";
   if (!state.readerMode) state.zoom = 1;
+  else {
+    if (!elements.readerStack.children.length) buildReaderStack();
+    elements.viewerStage.scrollTop = 0;
+    elements.viewerStage.scrollLeft = 0;
+    requestAnimationFrame(() => {
+      $$(".reader-page", elements.readerStack).slice(0, 2).forEach(card => {
+        card.dataset.near = "true";
+        loadReaderCard(card);
+      });
+    });
+  }
   updateZoom();
   setTimeout(syncStageSize, 30);
 }
@@ -390,23 +567,22 @@ async function downloadResult() {
   if (state.pages.length === 1) {
     const link = document.createElement("a");
     link.download = "scanmood-traduction.jpg";
-    link.href = elements.canvas.toDataURL("image/jpeg", .94);
+    link.href = await renderPageDataUrl(state.pages[0]);
     link.click(); return;
   }
   if (!window.jspdf?.jsPDF) { toast("Le module PDF n’est pas encore chargé. Réessaie dans un instant."); return; }
   const { jsPDF } = window.jspdf;
   let pdf;
   for (let i = 0; i < state.pages.length; i++) {
-    state.currentPage = i; await renderCurrentPage();
-    const image = elements.canvas.toDataURL("image/jpeg", .9);
-    const landscape = elements.canvas.width > elements.canvas.height;
+    const page = state.pages[i];
+    const image = await renderPageDataUrl(page);
+    const landscape = page.width > page.height;
     const orientation = landscape ? "landscape" : "portrait";
-    const width = elements.canvas.width; const height = elements.canvas.height;
+    const width = page.width; const height = page.height;
     if (!pdf) pdf = new jsPDF({ orientation, unit: "px", format: [width, height], hotfixes: ["px_scaling"] });
     else pdf.addPage([width, height], orientation);
     pdf.addImage(image, "JPEG", 0, 0, width, height);
   }
-  state.currentPage = 0; await renderCurrentPage();
   pdf.save("scanmood-traduction.pdf");
 }
 
@@ -453,7 +629,13 @@ elements.compareRange.addEventListener("input", () => {
 });
 $("#prevPage").addEventListener("click", async () => { if (state.currentPage > 0) { state.currentPage--; await renderCurrentPage(); } });
 $("#nextPage").addEventListener("click", async () => { if (state.currentPage < state.pages.length - 1) { state.currentPage++; await renderCurrentPage(); } });
-$("#redrawBtn").addEventListener("click", async () => { await drawTranslation(state.pages[state.currentPage]); toast("Modifications appliquées"); });
+$("#redrawBtn").addEventListener("click", async () => {
+  const page = state.pages[state.currentPage];
+  page.translatedDataUrl = "";
+  await drawTranslation(page);
+  buildReaderStack();
+  toast("Modifications appliquées");
+});
 $("#downloadBtn").addEventListener("click", downloadResult);
 elements.readerBtn.addEventListener("click", () => toggleReaderMode());
 $("#zoomOutBtn").addEventListener("click", () => updateZoom(-.1));

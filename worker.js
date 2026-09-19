@@ -144,14 +144,16 @@ async function translate(request, env, origin) {
 
 export default {
   async fetch(request, env) {
+    const url = new URL(request.url);
+    if (request.method === "GET" && url.pathname === "/health") {
+      return json({ ok: true, engine: "cloudflare-workers-ai", free: true }, 200, "*");
+    }
     const origin = allowedOrigin(request, env);
     if (!origin) return json({ error: "Origine non autorisée." }, 403, "null");
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors(origin) });
-    const url = new URL(request.url);
     try {
       if (request.method === "POST" && url.pathname === "/translate") return await translate(request, env, origin);
       if (request.method === "POST" && url.pathname === "/fetch") return await proxyFile(request, env, origin);
-      if (url.pathname === "/health") return json({ ok: true, engine: "cloudflare-workers-ai", free: true }, 200, origin);
       return json({ error: "Route introuvable." }, 404, origin);
     } catch (error) {
       return json({ error: error?.message || "Erreur inattendue." }, 500, origin);

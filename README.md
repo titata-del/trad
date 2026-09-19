@@ -7,10 +7,13 @@ Application web installable sur iPhone pour traduire des scans anglais, japonais
 - aucun mode démo et aucune fausse traduction ;
 - aucun abonnement OpenAI et aucune clé payante ;
 - traduction réelle avec Cloudflare Workers AI ;
-- import JPG, PNG, WEBP et PDF, jusqu’à 12 pages ;
+- import JPG, PNG, WEBP et PDF, jusqu’à 200 pages ;
 - import par lien direct vers une image ou un PDF public ;
 - vues Original, Traduit et Comparer réparées ;
 - mode lecture plein écran plus large ;
+- lecture verticale continue : toutes les pages défilent vers le bas ;
+- chargement progressif pour éviter les pages noires sur iPhone ;
+- découpage automatique des très longues captures sans perte de lisibilité ;
 - thème clair ou sombre dans les réglages ;
 - correction manuelle des dialogues et export JPG/PDF ;
 - écran de verrouillage type iPhone, code `071079`.
