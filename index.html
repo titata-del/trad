@@ -44,6 +44,9 @@
         </a>
         <div class="top-actions">
           <span id="apiStatus" class="status-pill"><i></i><span>À configurer</span></span>
+          <button id="historyBtn" class="icon-btn" aria-label="Historique" title="Historique">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></svg>
+          </button>
           <button id="settingsBtn" class="icon-btn" aria-label="Réglages" title="Réglages">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-1.94 1.94-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.04 1.56V20H9.14v-.08a1.7 1.7 0 0 0-1.04-1.56 1.7 1.7 0 0 0-1.88.34l-.06.06-1.94-1.94.06-.06A1.7 1.7 0 0 0 4.62 15a1.7 1.7 0 0 0-1.56-1.04H3v-2.74h.08a1.7 1.7 0 0 0 1.56-1.04A1.7 1.7 0 0 0 4.3 8.3l-.06-.06L6.18 6.3l.06.06a1.7 1.7 0 0 0 1.88.34 1.7 1.7 0 0 0 1.04-1.56V5h2.74v.08a1.7 1.7 0 0 0 1.04 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06 1.94 1.94-.06.06a1.7 1.7 0 0 0-.34 1.88 1.7 1.7 0 0 0 1.56 1.04H20v2.74h-.08A1.7 1.7 0 0 0 19.4 15Z"/></svg>
           </button>
@@ -78,12 +81,12 @@
           </div>
 
           <div id="linkPanel" class="source-panel" hidden>
-            <label class="field-label" for="urlInput">Lien public direct</label>
+            <label class="field-label" for="urlInput">Lien du chapitre, d’une image ou d’un PDF</label>
             <div class="url-field">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.1.1l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1"/><path d="M14 11a5 5 0 0 0-7.1-.1l-2 2A5 5 0 0 0 12 20l1.1-1.1"/></svg>
-              <input id="urlInput" type="url" inputmode="url" placeholder="https://exemple.com/scan.jpg" autocomplete="off" />
+              <input id="urlInput" type="url" inputmode="url" placeholder="https://site.com/chapitre-212" autocomplete="off" />
             </div>
-            <p class="microcopy">Fonctionne avec un lien direct vers une image ou un PDF public.</p>
+            <p class="microcopy">ScanMood cherche automatiquement les pages du chapitre. Certains sites protégés peuvent refuser l’accès.</p>
           </div>
 
           <div id="engineBanner" class="engine-banner">
@@ -218,6 +221,18 @@
           <p id="settingsMessage" class="dialog-copy">Le moteur utilise Cloudflare Workers AI. Il n’y a aucune clé OpenAI et aucun abonnement à prendre.</p>
           <div class="engine-info"><span>✦</span><div><strong>Offre gratuite Cloudflare</strong><small>Si le quota du jour est épuisé, l’app te demandera simplement de réessayer demain.</small></div></div>
         </section>
+      </form>
+    </dialog>
+
+    <dialog id="historyDialog" class="settings-dialog history-dialog">
+      <form method="dialog">
+        <div class="dialog-head">
+          <div><p class="eyebrow dark">Sur cet appareil</p><h2>Historique</h2></div>
+          <button class="icon-btn" value="cancel" aria-label="Fermer">×</button>
+        </div>
+        <p class="dialog-copy">Tes derniers chapitres restent enregistrés sur cet iPhone quand l’espace disponible le permet.</p>
+        <div id="historyList" class="history-list"></div>
+        <button id="clearHistoryBtn" type="button" class="text-btn danger">Effacer tout l’historique</button>
       </form>
     </dialog>
 

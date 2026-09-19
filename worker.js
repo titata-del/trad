@@ -25,11 +25,13 @@ function isPrivateHost(hostname) {
   return Boolean(match && Number(match[1]) >= 16 && Number(match[1]) <= 31);
 }
 
-async function safeFetch(startUrl) {
+async function safeFetch(startUrl, options = {}) {
   let url = new URL(startUrl);
   for (let redirects = 0; redirects < 4; redirects++) {
     if (url.protocol !== "https:" || isPrivateHost(url.hostname)) throw new Error("Lien refusé.");
-    const response = await fetch(url, { redirect: "manual", headers: { "User-Agent": "ScanMood/1.0" } });
+    const headers = { "User-Agent": "ScanMood/1.0", "Accept": options.accept || "*/*" };
+    if (options.referer) headers.Referer = options.referer;
+    const response = await fetch(url, { redirect: "manual", headers });
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get("Location");
       if (!location) throw new Error("Redirection invalide.");
@@ -43,7 +45,8 @@ async function safeFetch(startUrl) {
 async function proxyFile(request, env, origin) {
   const body = await request.json();
   if (!body?.url) return json({ error: "Lien manquant." }, 400, origin);
-  const upstream = await safeFetch(body.url);
+  const referer = typeof body.referer === "string" && /^https:\/\//i.test(body.referer) ? body.referer : "";
+  const upstream = await safeFetch(body.url, { accept: "image/avif,image/webp,image/png,image/jpeg,application/pdf,*/*;q=0.8", referer });
   if (!upstream.ok) return json({ error: "Le document n’est pas accessible." }, 400, origin);
   const type = (upstream.headers.get("Content-Type") || "").split(";")[0].toLowerCase();
   if (!(type.startsWith("image/") || type === "application/pdf")) return json({ error: "Le lien doit pointer vers une image ou un PDF." }, 415, origin);
@@ -52,6 +55,79 @@ async function proxyFile(request, env, origin) {
   const bytes = await upstream.arrayBuffer();
   if (bytes.byteLength > 15 * 1024 * 1024) return json({ error: "Le fichier dépasse 15 Mo." }, 413, origin);
   return new Response(bytes, { headers: { "Content-Type": type, "Cache-Control": "no-store", ...cors(origin) } });
+}
+
+function decodeHtmlUrl(value, baseUrl) {
+  try {
+    const decoded = String(value || "")
+      .replace(/\\u002F/gi, "/")
+      .replace(/\\\//g, "/")
+      .replace(/&amp;/gi, "&")
+      .replace(/&quot;/gi, "\"")
+      .trim();
+    if (!decoded || decoded.startsWith("data:") || decoded.startsWith("blob:")) return "";
+    const url = new URL(decoded, baseUrl);
+    if (url.protocol !== "https:" || isPrivateHost(url.hostname)) return "";
+    return url.href;
+  } catch {
+    return "";
+  }
+}
+
+function chapterTitle(html, fallback) {
+  const match = html.match(/<meta[^>]+(?:property|name)=["'](?:og:title|twitter:title)["'][^>]+content=["']([^"']+)/i)
+    || html.match(/<title[^>]*>([^<]+)<\/title>/i);
+  return (match?.[1] || fallback).replace(/&amp;/gi, "&").replace(/&#39;/g, "'").replace(/&quot;/gi, "\"").trim().slice(0, 180);
+}
+
+function extractChapterImages(html, pageUrl) {
+  const found = [];
+  const seen = new Set();
+  const add = raw => {
+    for (const candidate of String(raw || "").split(",")) {
+      const part = candidate.trim().split(/\s+/)[0];
+      const url = decodeHtmlUrl(part, pageUrl);
+      if (!url || seen.has(url)) continue;
+      const lower = url.toLowerCase();
+      if (/\.(?:svg|gif)(?:[?#]|$)/.test(lower) || /(?:logo|favicon|avatar|emoji|icon|banner|advert)/.test(lower)) continue;
+      seen.add(url);
+      found.push(url);
+    }
+  };
+
+  const tagPattern = /<(?:img|source)\b[^>]*>/gi;
+  for (const tag of html.match(tagPattern) || []) {
+    const attrPattern = /(?:data-src|data-lazy-src|data-original|data-url|src|srcset)\s*=\s*["']([^"']+)["']/gi;
+    let attr;
+    while ((attr = attrPattern.exec(tag))) add(attr[1]);
+  }
+
+  const embeddedPattern = /https?:\\?(?:\\?\/){2}[^"'<>\s]+?(?:\.jpe?g|\.png|\.webp|\.avif)(?:\?[^"'<>\s]*)?/gi;
+  for (const match of html.match(embeddedPattern) || []) add(match);
+  const jsonImagePattern = /["'](?:image(?:Url|Src)?|page(?:Url|Src)?|src)["']\s*:\s*["']([^"']+)["']/gi;
+  let jsonImage;
+  while ((jsonImage = jsonImagePattern.exec(html))) add(jsonImage[1]);
+  return found.slice(0, 200);
+}
+
+async function inspectChapter(request, env, origin) {
+  const body = await request.json();
+  if (!body?.url) return json({ error: "Lien du chapitre manquant." }, 400, origin);
+  const upstream = await safeFetch(body.url, { accept: "text/html,application/xhtml+xml,image/avif,image/webp,image/png,image/jpeg,application/pdf,*/*;q=0.7" });
+  if (!upstream.ok) {
+    const blocked = [401, 403, 429].includes(upstream.status);
+    return json({ error: blocked ? "Ce site bloque l’import automatique. Essaie un autre site ou un lien direct." : "La page du chapitre n’est pas accessible." }, 400, origin);
+  }
+  const type = (upstream.headers.get("Content-Type") || "").split(";")[0].toLowerCase();
+  if (type.startsWith("image/") || type === "application/pdf") return json({ kind: "file", url: body.url }, 200, origin);
+  if (!(type === "text/html" || type === "application/xhtml+xml" || !type)) return json({ error: "Ce lien n’est pas une page de chapitre reconnue." }, 415, origin);
+  const announcedSize = Number(upstream.headers.get("Content-Length") || 0);
+  if (announcedSize > 4 * 1024 * 1024) return json({ error: "La page du chapitre est trop lourde à analyser." }, 413, origin);
+  const html = await upstream.text();
+  if (html.length > 4 * 1024 * 1024) return json({ error: "La page du chapitre est trop lourde à analyser." }, 413, origin);
+  const images = extractChapterImages(html, body.url);
+  if (!images.length) return json({ error: "Aucune page de scan trouvée. Le site charge peut-être les images de façon protégée." }, 422, origin);
+  return json({ kind: "chapter", title: chapterTitle(html, "Chapitre importé"), images }, 200, origin);
 }
 
 function translationPrompt(language, style) {
@@ -154,6 +230,7 @@ export default {
     try {
       if (request.method === "POST" && url.pathname === "/translate") return await translate(request, env, origin);
       if (request.method === "POST" && url.pathname === "/fetch") return await proxyFile(request, env, origin);
+      if (request.method === "POST" && url.pathname === "/chapter") return await inspectChapter(request, env, origin);
       return json({ error: "Route introuvable." }, 404, origin);
     } catch (error) {
       return json({ error: error?.message || "Erreur inattendue." }, 500, origin);

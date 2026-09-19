@@ -14,6 +14,9 @@ const state = {
   zoom: 1,
   progressTimer: null,
   readerObserver: null,
+  sourceUrl: "",
+  sourceTitle: "",
+  historyId: "",
 };
 
 const elements = {
@@ -25,6 +28,7 @@ const elements = {
   pageNav: $("#pageNav"), pageCount: $("#pageCount"), regionList: $("#regionList"), apiStatus: $("#apiStatus"), toast: $("#toast"),
   settings: $("#settingsDialog"), settingsMessage: $("#settingsMessage"), compareRange: $("#compareRange"), compareHandle: $("#compareHandle"),
   readerBtn: $("#readerBtn"), zoomLabel: $("#zoomLabel"),
+  history: $("#historyDialog"), historyList: $("#historyList"),
 };
 
 function toast(message) {
@@ -93,6 +97,9 @@ function selectFiles(files) {
     return;
   }
   const totalMb = state.files.reduce((sum, file) => sum + file.size, 0) / 1024 / 1024;
+  state.sourceUrl = "";
+  state.sourceTitle = state.files.length === 1 ? state.files[0].name : `${state.files.length} scans importés`;
+  state.historyId = "";
   elements.dropTitle.textContent = state.files.length === 1 ? state.files[0].name : `${state.files.length} fichiers sélectionnés`;
   elements.dropMeta.textContent = `${totalMb.toFixed(1)} Mo · prêt à traduire`;
   elements.dropZone.classList.add("has-file");
@@ -176,13 +183,53 @@ async function buildPagesFromFiles() {
   return pages.slice(0, MAX_PAGES);
 }
 
-async function fetchRemoteFile(url) {
+async function fetchRemoteFile(url, referer = "") {
   if (!state.apiBase) throw new Error("La configuration Cloudflare n’est pas encore terminée.");
-  const response = await fetch(`${state.apiBase}/fetch`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) });
+  const response = await fetch(`${state.apiBase}/fetch`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url, referer }) });
   if (!response.ok) throw new Error((await safeJson(response))?.error || "Impossible de récupérer ce lien.");
   const blob = await response.blob();
   const name = new URL(url).pathname.split("/").pop() || (blob.type === "application/pdf" ? "scan.pdf" : "scan.jpg");
   return new File([blob], name, { type: blob.type });
+}
+
+async function inspectRemoteLink(url) {
+  const response = await fetch(`${state.apiBase}/chapter`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  });
+  const data = await safeJson(response);
+  if (!response.ok) throw new Error(data?.error || "Impossible d’analyser ce lien.");
+  return data;
+}
+
+async function buildPagesFromLink(url) {
+  setProcessing("Ouverture du chapitre…", "Recherche des pages sur le site", 7);
+  const chapter = await inspectRemoteLink(url);
+  state.sourceTitle = chapter.title || new URL(url).pathname.split("/").filter(Boolean).pop() || "Chapitre importé";
+  if (chapter.kind === "file") {
+    const file = await fetchRemoteFile(chapter.url || url, url);
+    state.files = [file];
+    return buildPagesFromFiles();
+  }
+  const imageUrls = Array.isArray(chapter.images) ? chapter.images.slice(0, MAX_PAGES) : [];
+  if (!imageUrls.length) throw new Error("Aucune page de scan trouvée dans ce chapitre.");
+  const pages = [];
+  let failed = 0;
+  for (let index = 0; index < imageUrls.length && pages.length < MAX_PAGES; index++) {
+    setProcessing(`Import de la page ${index + 1}/${imageUrls.length}…`, "Les pages sont préparées pour la lecture verticale", 8 + ((index + 1) / imageUrls.length) * 17);
+    try {
+      const file = await fetchRemoteFile(imageUrls[index], url);
+      if (!file.type.startsWith("image/")) continue;
+      const room = MAX_PAGES - pages.length;
+      pages.push(...await imageDataToPages(await fileToDataUrl(file), `Page ${index + 1}`, room));
+    } catch {
+      failed++;
+    }
+  }
+  if (!pages.length) throw new Error("Les images du chapitre sont protégées par le site et n’ont pas pu être chargées.");
+  if (failed) toast(`${failed} image${failed > 1 ? "s" : ""} du site n’ont pas pu être chargées.`);
+  return pages.slice(0, MAX_PAGES);
 }
 
 function setProcessing(title, meta, percent) {
@@ -229,11 +276,12 @@ async function runTranslation() {
   elements.processing.hidden = false;
   startProgress();
   try {
+    let preparedPages = null;
     if (state.sourceMode === "link") {
-      const file = await fetchRemoteFile(elements.urlInput.value.trim());
-      state.files = [file];
+      state.sourceUrl = elements.urlInput.value.trim();
+      preparedPages = await buildPagesFromLink(state.sourceUrl);
     }
-    state.pages = await buildPagesFromFiles();
+    state.pages = preparedPages || await buildPagesFromFiles();
     if (!state.pages.length) throw new Error("Aucune page à traduire.");
     let translatedCount = 0;
     let failedCount = 0;
@@ -271,6 +319,7 @@ async function runTranslation() {
     await new Promise(resolve => requestAnimationFrame(resolve));
     await renderCurrentPage();
     buildReaderStack();
+    saveCurrentHistory().catch(() => {});
     toggleReaderMode(true);
     requestAnimationFrame(syncStageSize);
     if (failedCount) toast(`${translatedCount} page${translatedCount > 1 ? "s" : ""} traduite${translatedCount > 1 ? "s" : ""}, ${failedCount} à réessayer.`);
@@ -586,6 +635,143 @@ async function downloadResult() {
   pdf.save("scanmood-traduction.pdf");
 }
 
+const HISTORY_DB = "scanmood-history";
+const HISTORY_STORE = "chapters";
+
+function openHistoryDb() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(HISTORY_DB, 1);
+    request.onupgradeneeded = () => request.result.createObjectStore(HISTORY_STORE, { keyPath: "id" });
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function historyOperation(mode, action) {
+  const db = await openHistoryDb();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(HISTORY_STORE, mode);
+    const store = transaction.objectStore(HISTORY_STORE);
+    let result;
+    try { result = action(store); } catch (error) { db.close(); reject(error); return; }
+    transaction.oncomplete = () => { db.close(); resolve(result?.result); };
+    transaction.onerror = () => { db.close(); reject(transaction.error); };
+    transaction.onabort = () => { db.close(); reject(transaction.error || new Error("Stockage interrompu.")); };
+  });
+}
+
+async function getHistoryEntries() {
+  const entries = await historyOperation("readonly", store => store.getAll());
+  return (entries || []).sort((a, b) => b.savedAt - a.savedAt);
+}
+
+async function trimHistory() {
+  const entries = await getHistoryEntries();
+  for (const entry of entries.slice(10)) await historyOperation("readwrite", store => store.delete(entry.id));
+}
+
+function historyPages() {
+  return state.pages.map(page => ({
+    name: page.name,
+    dataUrl: page.dataUrl,
+    width: page.width,
+    height: page.height,
+    regions: page.regions,
+    detectedLanguage: page.detectedLanguage || "auto",
+    translationError: page.translationError || "",
+    translatedDataUrl: "",
+  }));
+}
+
+async function saveCurrentHistory() {
+  if (!state.pages.length) return;
+  state.historyId ||= globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+  const base = {
+    id: state.historyId,
+    title: state.sourceTitle || state.pages[0]?.name || "Scan traduit",
+    url: state.sourceUrl || "",
+    savedAt: Date.now(),
+    pageCount: state.pages.length,
+    sourceLanguage: $("#languageSelect").value,
+    style: $("#styleSelect").value,
+  };
+  try {
+    await historyOperation("readwrite", store => store.put({ ...base, pages: historyPages() }));
+  } catch {
+    await historyOperation("readwrite", store => store.put({ ...base, pages: null }));
+  }
+  await trimHistory();
+}
+
+async function deleteHistoryEntry(id) {
+  await historyOperation("readwrite", store => store.delete(id));
+  await renderHistoryList();
+}
+
+async function openHistoryEntry(entry) {
+  elements.history.close();
+  $("#languageSelect").value = entry.sourceLanguage || "auto";
+  $("#styleSelect").value = entry.style || "natural";
+  state.historyId = entry.id;
+  state.sourceUrl = entry.url || "";
+  state.sourceTitle = entry.title || "Chapitre enregistré";
+  if (!Array.isArray(entry.pages) || !entry.pages.length) {
+    if (!entry.url) { toast("Ce scan n’est plus stocké sur l’iPhone."); return; }
+    const linkTab = $('[data-source="link"]');
+    linkTab.click();
+    elements.urlInput.value = entry.url;
+    syncSourceButton();
+    runTranslation();
+    return;
+  }
+  state.pages = entry.pages.map(page => ({ ...page, translatedDataUrl: "" }));
+  state.currentPage = 0;
+  elements.viewerStage.dataset.view = "translated";
+  $$('[data-view]').forEach(button => button.classList.toggle("active", button.dataset.view === "translated"));
+  elements.processing.hidden = true;
+  elements.result.hidden = false;
+  await renderCurrentPage();
+  buildReaderStack();
+  toggleReaderMode(true);
+}
+
+async function renderHistoryList() {
+  let entries = [];
+  try { entries = await getHistoryEntries(); } catch {}
+  elements.historyList.innerHTML = "";
+  if (!entries.length) {
+    const empty = document.createElement("p");
+    empty.className = "history-empty";
+    empty.textContent = "Aucun chapitre dans l’historique pour le moment.";
+    elements.historyList.appendChild(empty);
+    $("#clearHistoryBtn").hidden = true;
+    return;
+  }
+  $("#clearHistoryBtn").hidden = false;
+  for (const entry of entries) {
+    const item = document.createElement("article");
+    item.className = "history-item";
+    const main = document.createElement("div");
+    main.className = "history-item-main";
+    const title = document.createElement("strong");
+    title.textContent = entry.title || "Chapitre traduit";
+    const meta = document.createElement("small");
+    meta.textContent = `${entry.pageCount || 0} page${entry.pageCount > 1 ? "s" : ""} · ${new Intl.DateTimeFormat("fr-FR", { dateStyle: "short", timeStyle: "short" }).format(entry.savedAt)}`;
+    main.append(title, meta);
+    const actions = document.createElement("div");
+    actions.className = "history-item-actions";
+    const open = document.createElement("button");
+    open.type = "button"; open.className = "history-open"; open.textContent = "Ouvrir";
+    open.addEventListener("click", () => openHistoryEntry(entry));
+    const remove = document.createElement("button");
+    remove.type = "button"; remove.className = "history-delete"; remove.setAttribute("aria-label", "Supprimer"); remove.textContent = "×";
+    remove.addEventListener("click", () => deleteHistoryEntry(entry.id));
+    actions.append(open, remove);
+    item.append(main, actions);
+    elements.historyList.appendChild(item);
+  }
+}
+
 // Verrouillage
 $$('[data-key]').forEach(button => button.addEventListener("click", () => {
   elements.pinError.textContent = "";
@@ -595,6 +781,15 @@ $$('[data-key]').forEach(button => button.addEventListener("click", () => {
   updatePin();
 }));
 $("#lockBtn").addEventListener("click", lockApp);
+$("#historyBtn").addEventListener("click", async () => {
+  await renderHistoryList();
+  elements.history.showModal();
+});
+$("#clearHistoryBtn").addEventListener("click", async () => {
+  if (!confirm("Effacer tout l’historique ScanMood de cet appareil ?")) return;
+  await historyOperation("readwrite", store => store.clear());
+  await renderHistoryList();
+});
 
 // Source
 $$('.source-tab').forEach(tab => tab.addEventListener("click", () => {
@@ -605,7 +800,7 @@ $$('.source-tab').forEach(tab => tab.addEventListener("click", () => {
   syncSourceButton();
 }));
 elements.fileInput.addEventListener("change", event => selectFiles(event.target.files));
-elements.urlInput.addEventListener("input", syncSourceButton);
+elements.urlInput.addEventListener("input", () => { state.historyId = ""; syncSourceButton(); });
 elements.dropZone.addEventListener("dragover", event => { event.preventDefault(); elements.dropZone.classList.add("dragover"); });
 elements.dropZone.addEventListener("dragleave", () => elements.dropZone.classList.remove("dragover"));
 elements.dropZone.addEventListener("drop", event => { event.preventDefault(); elements.dropZone.classList.remove("dragover"); selectFiles(event.dataTransfer.files); });
@@ -634,6 +829,7 @@ $("#redrawBtn").addEventListener("click", async () => {
   page.translatedDataUrl = "";
   await drawTranslation(page);
   buildReaderStack();
+  saveCurrentHistory().catch(() => {});
   toast("Modifications appliquées");
 });
 $("#downloadBtn").addEventListener("click", downloadResult);
@@ -645,7 +841,7 @@ window.addEventListener("resize", syncStageSize);
 // Réglages
 function openSettings(message = "") {
   elements.settingsMessage.textContent = message || (state.apiBase
-    ? "Le moteur gratuit Cloudflare est actif. Tu peux importer un vrai scan ou un lien direct vers une image/PDF."
+    ? "Le moteur gratuit Cloudflare est actif. Tu peux importer un scan, un PDF ou l’adresse publique d’un chapitre."
     : "La vraie traduction sera disponible dès que l’adresse Cloudflare aura été ajoutée dans config.js sur GitHub.");
   elements.settings.showModal();
 }

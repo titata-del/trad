@@ -197,6 +197,17 @@ footer span:first-child { color: var(--ink); font-weight: 760; }
 .theme-switch button { min-height: 46px; border: 0; border-radius: 12px; color: var(--muted); background: transparent; font-weight: 690; }
 .theme-switch button.active { color: var(--ink); background: var(--card); box-shadow: 0 5px 16px rgba(0,0,0,.09); }
 .theme-switch button span { margin-right: 5px; font-size: 1rem; }
+.history-dialog { width: min(calc(100% - 28px), 620px); }
+.history-list { max-height: min(58vh, 520px); margin: 18px 0 8px; overflow: auto; display: grid; gap: 9px; }
+.history-empty { margin: 18px 0; padding: 28px 16px; border: 1px dashed var(--line); border-radius: 16px; color: var(--muted); text-align: center; font-size: .88rem; }
+.history-item { padding: 13px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; border: 1px solid var(--line); border-radius: 16px; background: #fafafd; }
+.history-item-main { min-width: 0; }
+.history-item strong, .history-item small { display: block; }
+.history-item strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .9rem; }
+.history-item small { margin-top: 5px; color: var(--muted); font-size: .74rem; }
+.history-item-actions { display: flex; gap: 6px; }
+.history-open, .history-delete { min-height: 36px; padding: 0 11px; border: 1px solid var(--line); border-radius: 11px; color: var(--ink); background: var(--card); font-size: .77rem; font-weight: 700; }
+.history-delete { width: 36px; padding: 0; color: #cc3b4d; font-size: 1rem; }
 
 body.reader-mode { overflow: hidden; }
 body.reader-mode #resultSection { position: fixed; inset: 0; z-index: 90; margin: 0; display: flex; flex-direction: column; background: #1c2427; }
@@ -223,6 +234,7 @@ html[data-theme="dark"] .source-tabs, html[data-theme="dark"] .view-switch, html
 html[data-theme="dark"] .source-tab.active, html[data-theme="dark"] .view-switch button.active { background: #263034; }
 html[data-theme="dark"] .drop-zone, html[data-theme="dark"] .url-field, html[data-theme="dark"] .options-grid label, html[data-theme="dark"] .region-item, html[data-theme="dark"] .dialog-input { color: var(--ink); background: #12191c; }
 html[data-theme="dark"] .engine-info { background: #12191c; }
+html[data-theme="dark"] .history-item { background: #12191c; }
 html[data-theme="dark"] .field-label, html[data-theme="dark"] .options-grid label > span { color: #d8dde0; }
 html[data-theme="dark"] .engine-banner { border-color: #453d7b; background: #211e38; }
 html[data-theme="dark"] .secondary-btn, html[data-theme="dark"] .reader-btn, html[data-theme="dark"] .page-nav button { color: var(--ink); background: #20292d; }

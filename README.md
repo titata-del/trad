@@ -8,7 +8,8 @@ Application web installable sur iPhone pour traduire des scans anglais, japonais
 - aucun abonnement OpenAI et aucune clé payante ;
 - traduction réelle avec Cloudflare Workers AI ;
 - import JPG, PNG, WEBP et PDF, jusqu’à 200 pages ;
-- import par lien direct vers une image ou un PDF public ;
+- import par lien vers une page de chapitre, une image ou un PDF public ;
+- historique local des 10 derniers chapitres, avec réouverture hors ligne quand le stockage de l’iPhone le permet ;
 - vues Original, Traduit et Comparer réparées ;
 - mode lecture plein écran plus large ;
 - lecture verticale continue : toutes les pages défilent vers le bas ;
@@ -38,7 +39,7 @@ Une fois ces trois étapes terminées, le bandeau « À configurer » disparaît
 
 ## Notes
 
-- Le lien importé doit être un lien direct HTTPS vers une image ou un PDF, pas l’adresse générale d’un chapitre sur un site.
+- L’importeur cherche jusqu’à 200 images dans une page de chapitre publique. Certains sites protégés peuvent refuser l’accès automatique ; ScanMood l’indique alors clairement et ne contourne pas leur protection.
 - Les images sont réduites à 2 200 px avant traduction pour économiser le quota gratuit.
 - Le code `071079` est un verrouillage visuel local, pas une protection de compte.
 - Vérifie les droits de traduction et de diffusion des scans utilisés.
