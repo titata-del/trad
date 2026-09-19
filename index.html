@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b0b0f" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="ScanMood" />
+    <meta name="description" content="Traduis des scans anglais, japonais et chinois en français, en gardant le ton de la scène." />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="./icon.svg" />
+    <link rel="stylesheet" href="./styles.css" />
+    <title>ScanMood — traduction de scans</title>
+  </head>
+  <body>
+    <div id="lockScreen" class="lock-screen" aria-labelledby="lockTitle">
+      <div class="lock-orb lock-orb-a"></div>
+      <div class="lock-orb lock-orb-b"></div>
+      <div class="lock-content">
+        <div class="lock-mark" aria-hidden="true">S</div>
+        <p class="eyebrow">ScanMood</p>
+        <h1 id="lockTitle">Saisis le code</h1>
+        <p class="lock-hint">6 chiffres pour ouvrir l’app</p>
+        <div id="pinDots" class="pin-dots" aria-label="0 chiffre saisi">
+          <span></span><span></span><span></span><span></span><span></span><span></span>
+        </div>
+        <p id="pinError" class="pin-error" aria-live="polite"></p>
+        <div class="keypad" aria-label="Pavé numérique">
+          <button data-key="1"><b>1</b></button><button data-key="2"><b>2</b><small>ABC</small></button><button data-key="3"><b>3</b><small>DEF</small></button>
+          <button data-key="4"><b>4</b><small>GHI</small></button><button data-key="5"><b>5</b><small>JKL</small></button><button data-key="6"><b>6</b><small>MNO</small></button>
+          <button data-key="7"><b>7</b><small>PQRS</small></button><button data-key="8"><b>8</b><small>TUV</small></button><button data-key="9"><b>9</b><small>WXYZ</small></button>
+          <span></span><button data-key="0"><b>0</b></button><button class="delete-key" data-key="delete" aria-label="Effacer">⌫</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="app" class="app-shell" hidden>
+      <header class="topbar">
+        <a class="brand" href="#" aria-label="ScanMood, accueil">
+          <span class="brand-mark">S</span>
+          <span>ScanMood</span>
+        </a>
+        <div class="top-actions">
+          <span id="apiStatus" class="status-pill"><i></i><span>Mode démo</span></span>
+          <button id="settingsBtn" class="icon-btn" aria-label="Réglages" title="Réglages">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-1.94 1.94-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.04 1.56V20H9.14v-.08a1.7 1.7 0 0 0-1.04-1.56 1.7 1.7 0 0 0-1.88.34l-.06.06-1.94-1.94.06-.06A1.7 1.7 0 0 0 4.62 15a1.7 1.7 0 0 0-1.56-1.04H3v-2.74h.08a1.7 1.7 0 0 0 1.56-1.04A1.7 1.7 0 0 0 4.3 8.3l-.06-.06L6.18 6.3l.06.06a1.7 1.7 0 0 0 1.88.34 1.7 1.7 0 0 0 1.04-1.56V5h2.74v.08a1.7 1.7 0 0 0 1.04 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06 1.94 1.94-.06.06a1.7 1.7 0 0 0-.34 1.88 1.7 1.7 0 0 0 1.56 1.04H20v2.74h-.08A1.7 1.7 0 0 0 19.4 15Z"/></svg>
+          </button>
+          <button id="lockBtn" class="icon-btn" aria-label="Verrouiller" title="Verrouiller">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="3"/><path d="M8.5 10V7.5a3.5 3.5 0 0 1 7 0V10"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <main>
+        <section class="intro">
+          <p class="eyebrow dark">Traduction contextuelle</p>
+          <h2>Le sens. Le ton. Le mood.</h2>
+          <p>Anglais, japonais ou chinois vers un français naturel — directement dans les bulles.</p>
+        </section>
+
+        <section id="sourceCard" class="source-card panel">
+          <div class="source-tabs" role="tablist" aria-label="Source du scan">
+            <button class="source-tab active" data-source="file" role="tab" aria-selected="true">Importer</button>
+            <button class="source-tab" data-source="link" role="tab" aria-selected="false">Coller un lien</button>
+          </div>
+
+          <div id="filePanel" class="source-panel">
+            <label id="dropZone" class="drop-zone" for="fileInput">
+              <span class="upload-icon">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/><path d="M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg>
+              </span>
+              <strong id="dropTitle">Choisir un scan ou un PDF</strong>
+              <span id="dropMeta">JPG, PNG, WEBP ou PDF · 12 pages maximum</span>
+              <input id="fileInput" type="file" accept="image/jpeg,image/png,image/webp,application/pdf" multiple />
+            </label>
+          </div>
+
+          <div id="linkPanel" class="source-panel" hidden>
+            <label class="field-label" for="urlInput">Lien public direct</label>
+            <div class="url-field">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.1.1l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1"/><path d="M14 11a5 5 0 0 0-7.1-.1l-2 2A5 5 0 0 0 12 20l1.1-1.1"/></svg>
+              <input id="urlInput" type="url" inputmode="url" placeholder="https://exemple.com/scan.jpg" autocomplete="off" />
+            </div>
+            <p class="microcopy">Fonctionne avec un lien direct vers une image ou un PDF public.</p>
+          </div>
+
+          <div class="options-grid">
+            <label>
+              <span>Langue d’origine</span>
+              <select id="languageSelect">
+                <option value="auto">Détection automatique</option>
+                <option value="english">Anglais</option>
+                <option value="japanese">Japonais</option>
+                <option value="chinese">Chinois</option>
+              </select>
+            </label>
+            <label>
+              <span>Style de traduction</span>
+              <select id="styleSelect">
+                <option value="natural">Naturel · recommandé</option>
+                <option value="faithful">Très fidèle</option>
+                <option value="adapted">Adaptation française</option>
+              </select>
+            </label>
+          </div>
+
+          <button id="translateBtn" class="primary-btn" disabled>
+            <span>Traduire en français</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
+          </button>
+          <button id="demoBtn" class="text-btn">Essayer avec la page démo</button>
+        </section>
+
+        <section id="processingCard" class="processing-card panel" hidden aria-live="polite">
+          <div class="processing-visual"><span></span><span></span><span></span></div>
+          <div>
+            <p id="processingTitle">Lecture du scan…</p>
+            <span id="processingMeta">Détection des bulles et du sens de lecture</span>
+          </div>
+          <div class="progress-track"><span id="progressBar"></span></div>
+        </section>
+
+        <section id="resultSection" class="results" hidden>
+          <div class="result-heading">
+            <div>
+              <p class="eyebrow dark">Résultat</p>
+              <h2 id="resultTitle">Page traduite</h2>
+              <p id="resultMeta">Japonais → Français · ton naturel</p>
+            </div>
+            <button id="newScanBtn" class="secondary-btn">Nouveau scan</button>
+          </div>
+
+          <div class="viewer-panel panel">
+            <div class="viewer-toolbar">
+              <div class="view-switch" role="group" aria-label="Affichage du résultat">
+                <button data-view="original">Original</button>
+                <button data-view="translated" class="active">Traduit</button>
+                <button data-view="compare">Comparer</button>
+              </div>
+              <button id="downloadBtn" class="download-btn">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m0 0 4-4m-4 4-4-4"/><path d="M5 19h14"/></svg>
+                Télécharger
+              </button>
+            </div>
+
+            <div id="pageNav" class="page-nav" hidden>
+              <button id="prevPage" aria-label="Page précédente">‹</button>
+              <span id="pageCount">Page 1 sur 1</span>
+              <button id="nextPage" aria-label="Page suivante">›</button>
+            </div>
+
+            <div id="viewerStage" class="viewer-stage" data-view="translated">
+              <img id="originalImage" alt="Scan original" />
+              <div id="translatedLayer" class="translated-layer"><canvas id="translatedCanvas"></canvas></div>
+              <input id="compareRange" class="compare-range" type="range" min="0" max="100" value="52" aria-label="Comparer l’original et la traduction" />
+              <span id="compareHandle" class="compare-handle"></span>
+            </div>
+          </div>
+
+          <div class="edit-panel panel">
+            <div class="edit-head">
+              <div>
+                <h3>Ajuster les dialogues</h3>
+                <p>Touche une traduction pour la modifier, puis elle se replace dans la bulle.</p>
+              </div>
+              <button id="redrawBtn" class="secondary-btn small">Appliquer</button>
+            </div>
+            <div id="regionList" class="region-list"></div>
+          </div>
+        </section>
+      </main>
+
+      <footer><span>ScanMood</span><span>Les scans restent sur ton appareil, sauf pendant leur traduction.</span></footer>
+    </div>
+
+    <dialog id="settingsDialog" class="settings-dialog">
+      <form method="dialog">
+        <div class="dialog-head">
+          <div><p class="eyebrow dark">Connexion</p><h2>Service de traduction</h2></div>
+          <button class="icon-btn" value="cancel" aria-label="Fermer">×</button>
+        </div>
+        <p class="dialog-copy">Colle l’adresse du service installé avec le dossier <strong>worker</strong>. La clé IA ne doit jamais être placée ici.</p>
+        <label class="field-label" for="apiUrlInput">Adresse du service</label>
+        <input id="apiUrlInput" class="dialog-input" type="url" placeholder="https://scanmood-api.votre-nom.workers.dev" />
+        <p id="settingsMessage" class="settings-message" aria-live="polite"></p>
+        <div class="dialog-actions">
+          <button id="clearApiBtn" type="button" class="text-btn danger">Retirer</button>
+          <button id="saveApiBtn" type="button" class="primary-btn compact">Enregistrer</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.8.69/pdf.min.mjs" type="module"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.2/jspdf.umd.min.js" defer></script>
+    <script src="./config.js"></script>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
