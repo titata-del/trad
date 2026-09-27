@@ -187,9 +187,19 @@ function cleanupPrompt(language) {
 Inspect the complete page and locate every readable source-language text: dialogue, thoughts, narration and sound effects. This step is ONLY for removing the old lettering. Do not translate anything.
 
 Return ONLY valid JSON, with this exact shape:
-{"detectedLanguage":"english|japanese|chinese","regions":[{"x":0,"y":0,"w":0,"h":0,"original":"","kind":"speech|thought|narration|sfx","surface":"uniform|artwork"}]}
+{"detectedLanguage":"english|japanese|chinese","regions":[{"x":0,"y":0,"w":0,"h":0,"original":"","kind":"speech|thought|narration|sfx","container":"bubble|box|none","surface":"uniform|artwork"}]}
 
-Coordinates are integers from 0 to 1000 relative to the full image. Each rectangle must tightly cover all ink belonging to the ORIGINAL LETTERS, including punctuation, but must avoid balloon outlines, panel borders, faces and drawings. Use surface "uniform" when the letters sit on a flat or nearly flat balloon/box background. Use surface "artwork" only when letters overlap drawing, texture, gradient or scenery. Return regions in natural reading order. If there is no readable text, return an empty regions array.`;
+Coordinates are integers from 0 to 1000 relative to the full image. Each rectangle must tightly cover all ink belonging to the ORIGINAL LETTERS, including punctuation, but must avoid balloon outlines, panel borders, faces and drawings.
+
+CRITICAL CLASSIFICATION RULES:
+- container "bubble" means the text is visibly enclosed by a speech or thought balloon.
+- container "box" means the text is visibly enclosed by a narration or caption rectangle.
+- container "none" means the text is printed directly over the panel artwork, scenery, texture, gradient or character.
+- surface "uniform" is allowed ONLY for container "bubble" or "box" when the background behind the letters is flat.
+- EVERY region with container "none" MUST use surface "artwork", even if the nearby color looks pale or simple.
+- Sound effects and decorative lettering outside balloons MUST use container "none" and surface "artwork". They must never be replaced by a white rectangle.
+
+Return regions in natural reading order. If there is no readable text, return an empty regions array.`;
 }
 
 function extractContent(payload) {

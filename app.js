@@ -287,6 +287,7 @@ async function cleanPage(page) {
   if (!Array.isArray(data.regions)) throw new Error("Réponse de nettoyage incomplète.");
   page.detectedLanguage = data.detectedLanguage || "auto";
   page.regions = data.regions.map(normalizeRegion).filter(Boolean);
+  await refineCleanupSurfaces(page);
   const artworkRegions = page.regions.filter(region => region.surface === "artwork");
   if (artworkRegions.length) {
     const maskDataUrl = await createCleanupMask(page, artworkRegions);
@@ -406,13 +407,55 @@ async function runTranslation() {
 function normalizeRegion(region) {
   const nums = [region.x, region.y, region.w, region.h].map(Number);
   if (nums.some(n => !Number.isFinite(n))) return null;
+  const kind = ["speech", "thought", "narration", "sfx"].includes(region.kind) ? region.kind : "speech";
+  const container = ["bubble", "box", "none"].includes(region.container) ? region.container : (kind === "sfx" ? "none" : "bubble");
   return {
     x: clamp(nums[0], 0, 1000), y: clamp(nums[1], 0, 1000),
     w: clamp(nums[2], 20, 1000), h: clamp(nums[3], 20, 1000),
     original: String(region.original || ""),
-    kind: ["speech", "thought", "narration", "sfx"].includes(region.kind) ? region.kind : "speech",
-    surface: region.surface === "artwork" ? "artwork" : "uniform",
+    kind,
+    container,
+    surface: container === "none" || kind === "sfx" || region.surface === "artwork" ? "artwork" : "uniform",
   };
+}
+
+async function refineCleanupSurfaces(page) {
+  const image = await loadImage(page.dataUrl);
+  const canvas = document.createElement("canvas");
+  canvas.width = image.naturalWidth;
+  canvas.height = image.naturalHeight;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(image, 0, 0);
+  for (const region of page.regions) {
+    if (region.container === "none" || region.kind === "sfx") {
+      region.surface = "artwork";
+      continue;
+    }
+    if (region.surface === "artwork") continue;
+    const { x, y, w, h } = regionBox(region, canvas);
+    const pad = Math.max(4, Math.min(w, h) * .09);
+    const sx = Math.max(0, Math.floor(x - pad));
+    const sy = Math.max(0, Math.floor(y - pad));
+    const sw = Math.max(1, Math.min(canvas.width - sx, Math.ceil(w + pad * 2)));
+    const sh = Math.max(1, Math.min(canvas.height - sy, Math.ceil(h + pad * 2)));
+    const pixels = ctx.getImageData(sx, sy, sw, sh).data;
+    const edge = Math.max(1, Math.round(Math.min(sw, sh) * .13));
+    const values = [];
+    for (let py = 0; py < sh; py += 3) {
+      for (let px = 0; px < sw; px += 3) {
+        if (px > edge && px < sw - edge && py > edge && py < sh - edge) continue;
+        const i = (py * sw + px) * 4;
+        values.push(pixels[i] * .2126 + pixels[i + 1] * .7152 + pixels[i + 2] * .0722);
+      }
+    }
+    if (!values.length) continue;
+    const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+    const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
+    const darkShare = values.filter(value => value < 90).length / values.length;
+    if (variance > 1100 || darkShare > .16) region.surface = "artwork";
+  }
+  canvas.width = 1;
+  canvas.height = 1;
 }
 
 function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
