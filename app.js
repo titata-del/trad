@@ -297,7 +297,10 @@ async function cleanPage(page) {
       body: JSON.stringify({ imageDataUrl: page.dataUrl, maskDataUrl, width: page.width, height: page.height }),
     });
     if (inpaintResponse.ok) page.cleanedBaseDataUrl = await blobToDataUrl(await inpaintResponse.blob());
-    else page.cleanupWarning = (await safeJson(inpaintResponse))?.error || "Les textes posés sur le dessin n’ont pas tous pu être reconstruits.";
+    else {
+      page.localReconstruction = true;
+      page.cleanupWarning = "Le nettoyage Cloudflare n’a pas répondu : reconstruction locale appliquée.";
+    }
   }
   return page.regions;
 }
@@ -476,6 +479,9 @@ async function renderPageDataUrl(page) {
   page.height = canvas.height;
   const ctx = canvas.getContext("2d");
   ctx.drawImage(image, 0, 0);
+  if (!page.cleanedBaseDataUrl) {
+    for (const region of page.regions.filter(item => item.surface === "artwork")) reconstructArtworkRegion(ctx, canvas, region);
+  }
   for (const region of page.regions.filter(item => item.surface === "uniform")) cleanUniformRegion(ctx, canvas, region);
   page.translatedDataUrl = canvas.toDataURL("image/jpeg", .95);
   canvas.width = 1;
@@ -588,6 +594,9 @@ async function drawTranslation(page) {
   page.width = canvas.width; page.height = canvas.height;
   const ctx = canvas.getContext("2d");
   ctx.drawImage(image, 0, 0);
+  if (!page.cleanedBaseDataUrl) {
+    for (const region of page.regions.filter(item => item.surface === "artwork")) reconstructArtworkRegion(ctx, canvas, region);
+  }
   for (const region of page.regions.filter(item => item.surface === "uniform")) cleanUniformRegion(ctx, canvas, region);
   syncStageSize();
   requestAnimationFrame(syncStageSize);
@@ -634,6 +643,73 @@ function cleanUniformRegion(ctx, canvas, region) {
   roundedRect(ctx, x - pad, y - pad, w + pad * 2, h + pad * 2, Math.min(10, pad * 1.4));
   ctx.fill();
   ctx.restore();
+}
+
+function reconstructArtworkRegion(ctx, canvas, region) {
+  const box = regionBox(region, canvas);
+  const pad = Math.max(4, Math.round(Math.min(box.w, box.h) * .06));
+  const x = Math.max(1, Math.floor(box.x - pad));
+  const y = Math.max(1, Math.floor(box.y - pad));
+  const w = Math.max(2, Math.min(canvas.width - x - 1, Math.ceil(box.w + pad * 2)));
+  const h = Math.max(2, Math.min(canvas.height - y - 1, Math.ceil(box.h + pad * 2)));
+  if (w < 2 || h < 2) return;
+
+  const margin = Math.max(2, Math.min(14, Math.round(Math.min(w, h) * .1)));
+  const sx = Math.max(0, x - margin);
+  const sy = Math.max(0, y - margin);
+  const sw = Math.min(canvas.width - sx, w + margin * 2);
+  const sh = Math.min(canvas.height - sy, h + margin * 2);
+  const source = ctx.getImageData(sx, sy, sw, sh);
+  const output = new ImageData(new Uint8ClampedArray(source.data), sw, sh);
+  const leftX = Math.max(0, x - sx - 1);
+  const rightX = Math.min(sw - 1, x - sx + w);
+  const topY = Math.max(0, y - sy - 1);
+  const bottomY = Math.min(sh - 1, y - sy + h);
+
+  const pixel = (data, px, py) => {
+    const i = (Math.max(0, Math.min(sh - 1, py)) * sw + Math.max(0, Math.min(sw - 1, px))) * 4;
+    return [data[i], data[i + 1], data[i + 2]];
+  };
+  const distance = (a, b) => Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]);
+  const mix = (a, b, amount) => a.map((value, index) => value * (1 - amount) + b[index] * amount);
+  const smooth = value => value * value * (3 - 2 * value);
+
+  for (let py = 0; py < h; py++) {
+    for (let px = 0; px < w; px++) {
+      const localX = x - sx + px;
+      const localY = y - sy + py;
+      const left = pixel(source.data, leftX, localY);
+      const right = pixel(source.data, rightX, localY);
+      const top = pixel(source.data, localX, topY);
+      const bottom = pixel(source.data, localX, bottomY);
+      const horizontal = mix(left, right, px / Math.max(1, w - 1));
+      const vertical = mix(top, bottom, py / Math.max(1, h - 1));
+      const horizontalScore = distance(left, right);
+      const verticalScore = distance(top, bottom);
+      const directionWeight = horizontalScore + verticalScore === 0 ? .5 : verticalScore / (horizontalScore + verticalScore);
+      let color = mix(vertical, horizontal, directionWeight);
+
+      const nearestEdge = Math.min(px, py, w - 1 - px, h - 1 - py);
+      const hash = ((px * 73856093) ^ (py * 19349663)) >>> 0;
+      const jitter = (hash % (margin * 2 + 1)) - margin;
+      let texture;
+      if (nearestEdge === px) texture = pixel(source.data, leftX, localY + jitter);
+      else if (nearestEdge === w - 1 - px) texture = pixel(source.data, rightX, localY + jitter);
+      else if (nearestEdge === py) texture = pixel(source.data, localX + jitter, topY);
+      else texture = pixel(source.data, localX + jitter, bottomY);
+      color = mix(color, texture, .12);
+
+      const feather = smooth(Math.min(1, (nearestEdge + 1) / Math.max(2, pad)));
+      const original = pixel(source.data, localX, localY);
+      color = mix(original, color, feather);
+      const i = (localY * sw + localX) * 4;
+      output.data[i] = Math.round(color[0]);
+      output.data[i + 1] = Math.round(color[1]);
+      output.data[i + 2] = Math.round(color[2]);
+      output.data[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(output, sx, sy);
 }
 
 function roundedRect(ctx, x, y, w, h, r) {

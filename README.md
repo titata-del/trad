@@ -9,6 +9,7 @@ Cette version est volontairement un prototype qualité. Elle retire les ancienne
 - nettoyage local des bulles et cadres à fond uni ;
 - reconstruction par inpainting pour le texte posé sur un dessin ou une texture ;
 - tout texte situé hors d’une bulle ou d’un encadré est obligatoirement reconstruit par l’IA, jamais couvert par un carré blanc ;
+- si le modèle d’inpainting distant ne répond pas, une reconstruction locale directionnelle prolonge les couleurs, dégradés et traits depuis les quatre bords au lieu de laisser le texte intact ;
 - protection des contours de bulles et des cases grâce à des zones serrées ;
 - un seul affichage final, sans options Original ou Comparer ;
 - export du résultat nettoyé en JPG ou PDF ;
