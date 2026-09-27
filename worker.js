@@ -181,21 +181,15 @@ async function inspectChapter(request, env, origin) {
   return json({ kind: "chapter", title: chapterTitle(renderedHtml || html, rendered?.title || "Chapitre importé"), images, completeScan: Boolean(renderedHtml) }, 200, origin);
 }
 
-function translationPrompt(language, style) {
-  const styleRules = {
-    faithful: "Be very faithful to the meaning and register, while keeping grammatical French.",
-    natural: "Write fluid, idiomatic French that sounds originally written in French while preserving meaning and character voice.",
-    adapted: "Adapt idioms, slang, jokes and rhythm boldly into contemporary French while preserving the scene's intent.",
-  };
+function cleanupPrompt(language) {
   const languageRule = language === "auto" ? "Detect English, Japanese, Simplified Chinese or Traditional Chinese." : `The source language is ${language}.`;
-  return `You are a professional manga, manhwa, comic and scanned-document translator. ${languageRule}
-Translate every readable text region into French. ${styleRules[style] || styleRules.natural}
-Analyze the whole page before translating: speaker relationships, politeness, sarcasm, tension, humor, slang, narration and previous bubbles on this page. Do not translate each bubble in isolation. Preserve proper names. Keep Japanese honorifics only when they matter to characterization. Adapt sound effects when a natural French equivalent exists.
+  return `You are a meticulous comic restoration assistant. ${languageRule}
+Inspect the complete page and locate every readable source-language text: dialogue, thoughts, narration and sound effects. This step is ONLY for removing the old lettering. Do not translate anything.
 
 Return ONLY valid JSON, with this exact shape:
-{"detectedLanguage":"english|japanese|chinese","regions":[{"x":0,"y":0,"w":0,"h":0,"original":"","translation":"","kind":"speech|thought|narration|sfx","treatment":"clean|blur"}]}
+{"detectedLanguage":"english|japanese|chinese","regions":[{"x":0,"y":0,"w":0,"h":0,"original":"","kind":"speech|thought|narration|sfx","surface":"uniform|artwork"}]}
 
-Coordinates are integers from 0 to 1000 relative to the full image. The rectangle must tightly cover the ORIGINAL LETTERS, with enough surrounding room for the French replacement. Use treatment "clean" for text inside plain speech balloons or simple boxes. Use "blur" only for text printed directly over complex artwork. Return regions in natural reading order. If there is no readable text, return an empty regions array.`;
+Coordinates are integers from 0 to 1000 relative to the full image. Each rectangle must tightly cover all ink belonging to the ORIGINAL LETTERS, including punctuation, but must avoid balloon outlines, panel borders, faces and drawings. Use surface "uniform" when the letters sit on a flat or nearly flat balloon/box background. Use surface "artwork" only when letters overlap drawing, texture, gradient or scenery. Return regions in natural reading order. If there is no readable text, return an empty regions array.`;
 }
 
 function extractContent(payload) {
@@ -224,7 +218,7 @@ function imageBytes(dataUrl) {
   return bytes;
 }
 
-async function translate(request, env, origin) {
+async function analyzeCleanup(request, env, origin) {
   if (!env.AI) return json({ error: "Le moteur Workers AI n’est pas relié à ce Worker." }, 503, origin);
   const body = await request.json();
   if (!/^data:image\/(jpeg|png|webp);base64,/i.test(body?.imageDataUrl || "")) return json({ error: "Image invalide." }, 400, origin);
@@ -234,7 +228,7 @@ async function translate(request, env, origin) {
       messages: [{
         role: "user",
         content: [
-          { type: "text", text: translationPrompt(body.sourceLanguage, body.style) },
+          { type: "text", text: cleanupPrompt(body.sourceLanguage) },
           { type: "image_url", image_url: { url: body.imageDataUrl } },
         ],
       }],
@@ -254,7 +248,7 @@ async function translate(request, env, origin) {
     try {
       const payload = await env.AI.run(env.AI_FALLBACK_MODEL || "@cf/llava-hf/llava-1.5-7b-hf", {
         image: [...imageBytes(body.imageDataUrl)],
-        prompt: translationPrompt(body.sourceLanguage, body.style),
+        prompt: cleanupPrompt(body.sourceLanguage),
         max_tokens: 4096,
         temperature: 0.15,
       });
@@ -269,17 +263,47 @@ async function translate(request, env, origin) {
   }
 }
 
+async function inpaintCleanup(request, env, origin) {
+  if (!env.AI) return json({ error: "Le moteur Workers AI n’est pas relié à ce Worker." }, 503, origin);
+  const body = await request.json();
+  if (!/^data:image\/(jpeg|png|webp);base64,/i.test(body?.imageDataUrl || "")) return json({ error: "Image invalide." }, 400, origin);
+  if (!/^data:image\/png;base64,/i.test(body?.maskDataUrl || "")) return json({ error: "Masque invalide." }, 400, origin);
+  const width = Math.max(256, Math.min(2048, Math.round(Number(body.width) || 1024)));
+  const height = Math.max(256, Math.min(2048, Math.round(Number(body.height) || 1024)));
+  try {
+    const output = await env.AI.run("@cf/runwayml/stable-diffusion-v1-5-inpainting", {
+      prompt: "Restore the original comic artwork and empty speech balloons. Remove every written character inside the white mask. Continue nearby lines, tones, paper texture and colors naturally. Preserve panel borders, balloon outlines, faces and the visual style exactly. Add no text, symbols, letters or new objects.",
+      negative_prompt: "text, letters, words, watermark, logo, new objects, changed face, changed character, blurry outlines",
+      image_b64: body.imageDataUrl.split(",", 2)[1],
+      mask: [...imageBytes(body.maskDataUrl)],
+      width,
+      height,
+      num_steps: 20,
+      strength: 0.92,
+      guidance: 7.5,
+    });
+    return new Response(output, { status: 200, headers: { "Content-Type": "image/png", "Cache-Control": "no-store", ...cors(origin) } });
+  } catch (error) {
+    const detail = String(error?.message || error || "");
+    if (/quota|daily free allocation|neurons|usage limit/i.test(detail)) {
+      return json({ error: "La limite gratuite du nettoyage IA est atteinte. Réessaie demain." }, 429, origin);
+    }
+    return json({ error: "Le nettoyage du dessin n’a pas abouti sur cette page." }, 502, origin);
+  }
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
-      return json({ ok: true, engine: "cloudflare-workers-ai", free: true }, 200, "*");
+      return json({ ok: true, engine: "cloudflare-workers-ai", stage: "cleaning", free: true }, 200, "*");
     }
     const origin = allowedOrigin(request, env);
     if (!origin) return json({ error: "Origine non autorisée." }, 403, "null");
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: cors(origin) });
     try {
-      if (request.method === "POST" && url.pathname === "/translate") return await translate(request, env, origin);
+      if (request.method === "POST" && url.pathname === "/clean") return await analyzeCleanup(request, env, origin);
+      if (request.method === "POST" && url.pathname === "/inpaint") return await inpaintCleanup(request, env, origin);
       if (request.method === "POST" && url.pathname === "/fetch") return await proxyFile(request, env, origin);
       if (request.method === "POST" && url.pathname === "/chapter") return await inspectChapter(request, env, origin);
       return json({ error: "Route introuvable." }, 404, origin);

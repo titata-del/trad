@@ -7,12 +7,12 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="ScanMood" />
-    <meta name="description" content="Traduis des scans anglais, japonais et chinois en français, en gardant le ton de la scène." />
+    <meta name="description" content="Prototype de nettoyage professionnel des bulles de scans." />
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="icon" href="./icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="./icon.svg" />
     <link rel="stylesheet" href="./styles.css" />
-    <title>ScanMood — traduction de scans</title>
+    <title>ScanMood — laboratoire de nettoyage</title>
   </head>
   <body>
     <div id="lockScreen" class="lock-screen" aria-labelledby="lockTitle">
@@ -58,9 +58,9 @@
 
       <main>
         <section class="intro">
-          <p class="eyebrow dark">Traduction contextuelle</p>
-          <h2>Le sens. Le ton. Le mood.</h2>
-          <p>Anglais, japonais ou chinois vers un français naturel — directement dans les bulles.</p>
+          <p class="eyebrow dark">Étape 1 · Nettoyage</p>
+          <h2>Des bulles propres. Vraiment.</h2>
+          <p>On retire les anciennes écritures sans ajouter de traduction, afin de valider une base nette avant la suite.</p>
         </section>
 
         <section id="sourceCard" class="source-card panel">
@@ -75,7 +75,7 @@
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5"/><path d="M5 14v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg>
               </span>
               <strong id="dropTitle">Choisir un scan ou un PDF</strong>
-              <span id="dropMeta">JPG, PNG, WEBP ou PDF · 200 pages maximum</span>
+              <span id="dropMeta">JPG, PNG, WEBP ou PDF · 3 pages de test maximum</span>
               <input id="fileInput" type="file" accept="image/jpeg,image/png,image/webp,application/pdf" multiple />
             </label>
           </div>
@@ -86,19 +86,19 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.1.1l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1"/><path d="M14 11a5 5 0 0 0-7.1-.1l-2 2A5 5 0 0 0 12 20l1.1-1.1"/></svg>
               <input id="urlInput" type="url" inputmode="url" placeholder="https://site.com/chapitre-212" autocomplete="off" />
             </div>
-            <p class="microcopy">ScanMood ouvre et fait défiler le chapitre automatiquement pour récupérer toutes les pages disponibles.</p>
+            <p class="microcopy">Pour cette phase de qualité, seuls les trois premiers scans récupérés seront nettoyés.</p>
           </div>
 
           <div id="engineBanner" class="engine-banner">
             <span class="engine-icon">✦</span>
             <div>
               <strong>Dernière étape de mise en ligne</strong>
-              <p>Relie gratuitement Cloudflare une seule fois, puis les vrais scans seront traduits.</p>
+              <p>Cloudflare est relié une seule fois, puis les anciennes écritures peuvent être nettoyées.</p>
             </div>
             <button id="setupHelpBtn" type="button">Voir</button>
           </div>
 
-          <div class="options-grid">
+          <div class="options-grid single-option">
             <label>
               <span>Langue d’origine</span>
               <select id="languageSelect">
@@ -108,18 +108,10 @@
                 <option value="chinese">Chinois</option>
               </select>
             </label>
-            <label>
-              <span>Style de traduction</span>
-              <select id="styleSelect">
-                <option value="natural">Naturel · recommandé</option>
-                <option value="faithful">Très fidèle</option>
-                <option value="adapted">Adaptation française</option>
-              </select>
-            </label>
           </div>
 
           <button id="translateBtn" class="primary-btn" disabled>
-            <span>Traduire en français</span>
+            <span>Nettoyer les écritures</span>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
           </button>
         </section>
@@ -137,19 +129,15 @@
           <div class="result-heading">
             <div>
               <p class="eyebrow dark">Résultat</p>
-              <h2 id="resultTitle">Page traduite</h2>
-              <p id="resultMeta">Japonais → Français · ton naturel</p>
+              <h2 id="resultTitle">Page nettoyée</h2>
+              <p id="resultMeta">Bulles prêtes pour la traduction</p>
             </div>
             <button id="newScanBtn" class="secondary-btn">Nouveau scan</button>
           </div>
 
           <div class="viewer-panel panel">
             <div class="viewer-toolbar">
-              <div class="view-switch" role="group" aria-label="Affichage du résultat">
-                <button data-view="original">Original</button>
-                <button data-view="translated" class="active">Traduit</button>
-                <button data-view="compare">Comparer</button>
-              </div>
+              <strong class="result-only-label">Résultat nettoyé</strong>
               <div class="viewer-actions">
                 <button id="readerBtn" class="reader-btn" aria-pressed="false">
                   <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5m13 5h5v-5"/></svg>
@@ -168,12 +156,9 @@
               <button id="nextPage" aria-label="Page suivante">›</button>
             </div>
 
-            <div id="viewerStage" class="viewer-stage" data-view="translated">
+            <div id="viewerStage" class="viewer-stage">
               <div id="stagePage" class="stage-page">
-                <img id="originalImage" alt="Scan original" />
-                <div id="translatedLayer" class="translated-layer"><canvas id="translatedCanvas"></canvas></div>
-                <input id="compareRange" class="compare-range" type="range" min="0" max="100" value="52" aria-label="Comparer l’original et la traduction" />
-                <span id="compareHandle" class="compare-handle"></span>
+                <canvas id="translatedCanvas" aria-label="Scan nettoyé"></canvas>
               </div>
               <div id="readerStack" class="reader-stack" aria-label="Chapitre en lecture verticale"></div>
             </div>
@@ -185,20 +170,10 @@
             </div>
           </div>
 
-          <div class="edit-panel panel">
-            <div class="edit-head">
-              <div>
-                <h3>Ajuster les dialogues</h3>
-                <p>Touche une traduction pour la modifier, puis elle se replace dans la bulle.</p>
-              </div>
-              <button id="redrawBtn" class="secondary-btn small">Appliquer</button>
-            </div>
-            <div id="regionList" class="region-list"></div>
-          </div>
         </section>
       </main>
 
-      <footer><span>ScanMood</span><span>Les scans restent sur ton appareil, sauf pendant leur traduction.</span></footer>
+      <footer><span>ScanMood</span><span>Prototype qualité · nettoyage avant traduction.</span></footer>
     </div>
 
     <dialog id="settingsDialog" class="settings-dialog">
@@ -217,7 +192,7 @@
         </section>
 
         <section class="settings-section engine-settings">
-          <div class="setting-title"><strong>Traduction réelle</strong><span id="engineSettingStatus">À configurer</span></div>
+          <div class="setting-title"><strong>Nettoyage IA</strong><span id="engineSettingStatus">À configurer</span></div>
           <p id="settingsMessage" class="dialog-copy">Le moteur utilise Cloudflare Workers AI. Il n’y a aucune clé OpenAI et aucun abonnement à prendre.</p>
           <div class="engine-info"><span>✦</span><div><strong>Offre gratuite Cloudflare</strong><small>Si le quota du jour est épuisé, l’app te demandera simplement de réessayer demain.</small></div></div>
         </section>

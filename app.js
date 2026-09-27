@@ -1,6 +1,6 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-const MAX_PAGES = 200;
+const MAX_PAGES = 3;
 
 const state = {
   pin: "",
@@ -24,9 +24,9 @@ const elements = {
   fileInput: $("#fileInput"), dropZone: $("#dropZone"), dropTitle: $("#dropTitle"), dropMeta: $("#dropMeta"), urlInput: $("#urlInput"),
   translateBtn: $("#translateBtn"), sourceCard: $("#sourceCard"), processing: $("#processingCard"), progress: $("#progressBar"),
   processingTitle: $("#processingTitle"), processingMeta: $("#processingMeta"), result: $("#resultSection"), resultTitle: $("#resultTitle"), resultMeta: $("#resultMeta"),
-  originalImage: $("#originalImage"), canvas: $("#translatedCanvas"), translatedLayer: $("#translatedLayer"), viewerStage: $("#viewerStage"), stagePage: $("#stagePage"), readerStack: $("#readerStack"),
-  pageNav: $("#pageNav"), pageCount: $("#pageCount"), regionList: $("#regionList"), apiStatus: $("#apiStatus"), toast: $("#toast"),
-  settings: $("#settingsDialog"), settingsMessage: $("#settingsMessage"), compareRange: $("#compareRange"), compareHandle: $("#compareHandle"),
+  canvas: $("#translatedCanvas"), viewerStage: $("#viewerStage"), stagePage: $("#stagePage"), readerStack: $("#readerStack"),
+  pageNav: $("#pageNav"), pageCount: $("#pageCount"), apiStatus: $("#apiStatus"), toast: $("#toast"),
+  settings: $("#settingsDialog"), settingsMessage: $("#settingsMessage"),
   readerBtn: $("#readerBtn"), zoomLabel: $("#zoomLabel"),
   history: $("#historyDialog"), historyList: $("#historyList"),
 };
@@ -101,7 +101,7 @@ function selectFiles(files) {
   state.sourceTitle = state.files.length === 1 ? state.files[0].name : `${state.files.length} scans importés`;
   state.historyId = "";
   elements.dropTitle.textContent = state.files.length === 1 ? state.files[0].name : `${state.files.length} fichiers sélectionnés`;
-  elements.dropMeta.textContent = `${totalMb.toFixed(1)} Mo · prêt à traduire`;
+  elements.dropMeta.textContent = `${totalMb.toFixed(1)} Mo · prêt à nettoyer`;
   elements.dropZone.classList.add("has-file");
   syncSourceButton();
 }
@@ -117,7 +117,7 @@ async function fileToDataUrl(file) {
 
 async function imageDataToPage(dataUrl, name) {
   const image = await loadImage(dataUrl);
-  const maxSide = 2200;
+  const maxSide = 1800;
   const scale = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
   const canvas = document.createElement("canvas");
   canvas.width = Math.round(image.naturalWidth * scale);
@@ -127,15 +127,15 @@ async function imageDataToPage(dataUrl, name) {
 }
 
 function canvasToPage(canvas, name) {
-  return { name, dataUrl: canvas.toDataURL("image/jpeg", .9), width: canvas.width, height: canvas.height, regions: [], translatedDataUrl: "", translationError: "" };
+  return { name, dataUrl: canvas.toDataURL("image/jpeg", .94), width: canvas.width, height: canvas.height, regions: [], cleanedBaseDataUrl: "", translatedDataUrl: "", translationError: "" };
 }
 
 async function imageDataToPages(dataUrl, name, limit) {
   const image = await loadImage(dataUrl);
   if (image.naturalHeight <= image.naturalWidth * 2.5) return [await imageDataToPage(dataUrl, name)];
 
-  const scale = Math.min(1, 2200 / image.naturalWidth);
-  const sourceSliceHeight = Math.max(1, Math.floor(2200 / scale));
+  const scale = Math.min(1, 1800 / image.naturalWidth);
+  const sourceSliceHeight = Math.max(1, Math.floor(1800 / scale));
   const count = Math.min(limit, Math.ceil(image.naturalHeight / sourceSliceHeight));
   const pages = [];
   for (let index = 0; index < count; index++) {
@@ -265,7 +265,7 @@ function setProcessing(title, meta, percent) {
 
 function startProgress() {
   let value = 3;
-  setProcessing("Lecture du scan…", "Détection des bulles et du sens de lecture", value);
+  setProcessing("Analyse du scan…", "Repérage précis des anciennes écritures", value);
   clearInterval(state.progressTimer);
   state.progressTimer = setInterval(() => {
     value = Math.min(88, value + Math.max(1, (90 - value) * .035));
@@ -273,27 +273,64 @@ function startProgress() {
   }, 350);
 }
 
-async function translatePage(page, index, total) {
-  const response = await fetch(`${state.apiBase}/translate`, {
+async function cleanPage(page) {
+  const response = await fetch(`${state.apiBase}/clean`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       imageDataUrl: page.dataUrl,
       sourceLanguage: $("#languageSelect").value,
-      style: $("#styleSelect").value,
     }),
   });
   const data = await safeJson(response);
-  if (!response.ok) throw new Error(data?.error || "La traduction a échoué.");
-  if (!Array.isArray(data.regions)) throw new Error("Réponse de traduction incomplète.");
+  if (!response.ok) throw new Error(data?.error || "L’analyse du nettoyage a échoué.");
+  if (!Array.isArray(data.regions)) throw new Error("Réponse de nettoyage incomplète.");
   page.detectedLanguage = data.detectedLanguage || "auto";
   page.regions = data.regions.map(normalizeRegion).filter(Boolean);
+  const artworkRegions = page.regions.filter(region => region.surface === "artwork");
+  if (artworkRegions.length) {
+    const maskDataUrl = await createCleanupMask(page, artworkRegions);
+    const inpaintResponse = await fetch(`${state.apiBase}/inpaint`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ imageDataUrl: page.dataUrl, maskDataUrl, width: page.width, height: page.height }),
+    });
+    if (inpaintResponse.ok) page.cleanedBaseDataUrl = await blobToDataUrl(await inpaintResponse.blob());
+    else page.cleanupWarning = (await safeJson(inpaintResponse))?.error || "Les textes posés sur le dessin n’ont pas tous pu être reconstruits.";
+  }
   return page.regions;
+}
+
+async function createCleanupMask(page, regions) {
+  const image = await loadImage(page.dataUrl);
+  const canvas = document.createElement("canvas");
+  canvas.width = image.naturalWidth;
+  canvas.height = image.naturalHeight;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#fff";
+  for (const region of regions) {
+    const box = regionBox(region, canvas);
+    const pad = Math.max(3, Math.min(box.w, box.h) * .035);
+    roundedRect(ctx, box.x - pad, box.y - pad, box.w + pad * 2, box.h + pad * 2, Math.min(12, pad));
+    ctx.fill();
+  }
+  return canvas.toDataURL("image/png");
+}
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
 }
 
 async function runTranslation() {
   if (!state.apiBase) {
-    openSettings("La vraie traduction sera disponible dès que l’adresse Cloudflare aura été ajoutée dans config.js sur GitHub.");
+    openSettings("Le nettoyage sera disponible dès que l’adresse Cloudflare aura été ajoutée dans config.js sur GitHub.");
     return;
   }
   elements.result.hidden = true;
@@ -306,7 +343,7 @@ async function runTranslation() {
       preparedPages = await buildPagesFromLink(state.sourceUrl);
     }
     state.pages = preparedPages || await buildPagesFromFiles();
-    if (!state.pages.length) throw new Error("Aucune page à traduire.");
+    if (!state.pages.length) throw new Error("Aucune page à nettoyer.");
     let translatedCount = 0;
     let failedCount = 0;
     let firstError = "";
@@ -319,12 +356,12 @@ async function runTranslation() {
         const i = nextPage++;
         attempted.add(i);
         try {
-          await translatePage(state.pages[i], i, state.pages.length);
+          await cleanPage(state.pages[i]);
           state.pages[i].translationError = "";
           state.pages[i].translatedDataUrl = "";
           translatedCount++;
         } catch (pageError) {
-          const message = pageError?.message || "Cette page n’a pas pu être traduite.";
+          const message = pageError?.message || "Cette page n’a pas pu être nettoyée.";
           state.pages[i].translationError = message;
           state.pages[i].regions = [];
           failedCount++;
@@ -332,7 +369,7 @@ async function runTranslation() {
           if (/limite gratuite|quota|allocation/i.test(message)) quotaReached = true;
         } finally {
           completedTranslations++;
-          setProcessing(`Traduction rapide · ${completedTranslations}/${state.pages.length} pages`, "Jusqu’à 3 pages sont analysées en même temps", 25 + (completedTranslations / state.pages.length) * 65);
+          setProcessing(`Nettoyage · ${completedTranslations}/${state.pages.length} pages`, "Analyse des écritures et reconstruction des fonds", 25 + (completedTranslations / state.pages.length) * 65);
         }
       }
     }
@@ -345,12 +382,10 @@ async function runTranslation() {
         failedCount++;
       });
     }
-    if (!translatedCount) throw new Error(firstError || "La traduction a échoué.");
+    if (!translatedCount) throw new Error(firstError || "Le nettoyage a échoué.");
     clearInterval(state.progressTimer);
-    setProcessing("Traduction terminée", "Mise en page du français dans les bulles", 100);
+    setProcessing("Nettoyage terminé", "Les bulles sont prêtes pour l’étape traduction", 100);
     state.currentPage = 0;
-    elements.viewerStage.dataset.view = "translated";
-    $$('[data-view]').forEach(button => button.classList.toggle("active", button.dataset.view === "translated"));
     elements.processing.hidden = true;
     elements.result.hidden = false;
     await new Promise(resolve => requestAnimationFrame(resolve));
@@ -359,7 +394,7 @@ async function runTranslation() {
     saveCurrentHistory().catch(() => {});
     toggleReaderMode(true);
     requestAnimationFrame(syncStageSize);
-    if (failedCount) toast(`${translatedCount} page${translatedCount > 1 ? "s" : ""} traduite${translatedCount > 1 ? "s" : ""}, ${failedCount} à réessayer.`);
+    if (failedCount) toast(`${translatedCount} page${translatedCount > 1 ? "s" : ""} nettoyée${translatedCount > 1 ? "s" : ""}, ${failedCount} à réessayer.`);
   } catch (error) {
     clearInterval(state.progressTimer);
     elements.processing.hidden = true;
@@ -374,9 +409,9 @@ function normalizeRegion(region) {
   return {
     x: clamp(nums[0], 0, 1000), y: clamp(nums[1], 0, 1000),
     w: clamp(nums[2], 20, 1000), h: clamp(nums[3], 20, 1000),
-    original: String(region.original || ""), translation: String(region.translation || ""),
+    original: String(region.original || ""),
     kind: ["speech", "thought", "narration", "sfx"].includes(region.kind) ? region.kind : "speech",
-    treatment: region.treatment === "blur" ? "blur" : "clean",
+    surface: region.surface === "artwork" ? "artwork" : "uniform",
   };
 }
 
@@ -386,11 +421,11 @@ async function safeJson(response) { try { return await response.json(); } catch 
 
 async function renderPageDataUrl(page) {
   if (page.translatedDataUrl) return page.translatedDataUrl;
-  if (!page.regions.length) {
+  if (!page.regions.length && !page.cleanedBaseDataUrl) {
     page.translatedDataUrl = page.dataUrl;
     return page.translatedDataUrl;
   }
-  const image = await loadImage(page.dataUrl);
+  const image = await loadImage(page.cleanedBaseDataUrl || page.dataUrl);
   const canvas = document.createElement("canvas");
   canvas.width = image.naturalWidth;
   canvas.height = image.naturalHeight;
@@ -398,8 +433,8 @@ async function renderPageDataUrl(page) {
   page.height = canvas.height;
   const ctx = canvas.getContext("2d");
   ctx.drawImage(image, 0, 0);
-  for (const region of page.regions) drawRegion(ctx, canvas, region);
-  page.translatedDataUrl = canvas.toDataURL("image/jpeg", .9);
+  for (const region of page.regions.filter(item => item.surface === "uniform")) cleanUniformRegion(ctx, canvas, region);
+  page.translatedDataUrl = canvas.toDataURL("image/jpeg", .95);
   canvas.width = 1;
   canvas.height = 1;
   return page.translatedDataUrl;
@@ -416,10 +451,7 @@ function buildReaderStack() {
     card.dataset.index = String(index);
     card.innerHTML = `
       <div class="reader-page-frame">
-        <img class="reader-original" alt="Page ${index + 1} originale" decoding="async" />
-        <div class="reader-translated-layer"><img class="reader-translated" alt="Page ${index + 1} traduite" decoding="async" /></div>
-        <input class="reader-compare-range" type="range" min="0" max="100" value="52" aria-label="Comparer la page ${index + 1}" />
-        <span class="reader-compare-handle" aria-hidden="true"></span>
+        <img class="reader-cleaned" alt="Page ${index + 1} nettoyée" decoding="async" />
         <p class="reader-page-error" hidden></p>
       </div>`;
     const frame = $(".reader-page-frame", card);
@@ -428,12 +460,9 @@ function buildReaderStack() {
     frame.style.aspectRatio = `${ratioWidth} / ${ratioHeight}`;
     if (page.translationError) {
       const error = $(".reader-page-error", card);
-      error.textContent = `Page ${index + 1} non traduite · ${page.translationError}`;
+      error.textContent = `Page ${index + 1} non nettoyée · ${page.translationError}`;
       error.hidden = false;
     }
-    const range = $(".reader-compare-range", card);
-    range.addEventListener("input", () => setReaderCompare(card, Number(range.value)));
-    setReaderCompare(card, 52);
     fragment.appendChild(card);
   });
 
@@ -449,13 +478,6 @@ function buildReaderStack() {
   syncReaderPageSizes();
 }
 
-function setReaderCompare(card, value) {
-  const layer = $(".reader-translated-layer", card);
-  const handle = $(".reader-compare-handle", card);
-  if (layer) layer.style.clipPath = `inset(0 ${100 - value}% 0 0)`;
-  if (handle) handle.style.left = `${value}%`;
-}
-
 async function loadReaderCard(card) {
   if (card.dataset.loading === "true" || card.dataset.loaded === "true") return;
   const page = state.pages[Number(card.dataset.index)];
@@ -464,8 +486,7 @@ async function loadReaderCard(card) {
   try {
     const translated = await renderPageDataUrl(page);
     if (card.dataset.near !== "true" || !card.isConnected) return;
-    $(".reader-original", card).src = page.dataUrl;
-    $(".reader-translated", card).src = translated;
+    $(".reader-cleaned", card).src = translated;
     card.dataset.loaded = "true";
   } catch {
     const error = $(".reader-page-error", card);
@@ -478,8 +499,7 @@ async function loadReaderCard(card) {
 
 function unloadReaderCard(card) {
   if (card.dataset.loaded !== "true") return;
-  $(".reader-original", card).removeAttribute("src");
-  $(".reader-translated", card).removeAttribute("src");
+  $(".reader-cleaned", card).removeAttribute("src");
   card.dataset.loaded = "false";
 }
 
@@ -496,18 +516,17 @@ function syncReaderPageSizes() {
 async function renderCurrentPage() {
   const page = state.pages[state.currentPage];
   if (!page) return;
-  await setImageElementSource(elements.originalImage, page.dataUrl);
   await drawTranslation(page);
   elements.pageNav.hidden = state.pages.length < 2;
   elements.pageCount.textContent = `Page ${state.currentPage + 1} sur ${state.pages.length}`;
   $("#prevPage").disabled = state.currentPage === 0;
   $("#nextPage").disabled = state.currentPage === state.pages.length - 1;
   const translatedPages = state.pages.filter(item => !item.translationError).length;
-  elements.resultTitle.textContent = state.pages.length > 1 ? `${translatedPages}/${state.pages.length} pages traduites` : "Page traduite";
+  elements.resultTitle.textContent = state.pages.length > 1 ? `${translatedPages}/${state.pages.length} pages nettoyées` : "Page nettoyée";
   const language = languageLabel(page.detectedLanguage || $("#languageSelect").value);
-  const style = $("#styleSelect").selectedOptions[0].textContent.split("·")[0].trim().toLowerCase();
-  elements.resultMeta.textContent = `${language} → Français · ton ${style}`;
-  renderRegionList(page);
+  const count = page.regions.length;
+  elements.resultMeta.textContent = `${language} · ${count} zone${count > 1 ? "s" : ""} d’écriture retirée${count > 1 ? "s" : ""}`;
+  if (page.cleanupWarning) toast(page.cleanupWarning);
 }
 
 function setImageElementSource(image, src) {
@@ -520,43 +539,58 @@ function setImageElementSource(image, src) {
 }
 
 async function drawTranslation(page) {
-  const image = await loadImage(page.dataUrl);
+  const image = await loadImage(page.cleanedBaseDataUrl || page.dataUrl);
   const canvas = elements.canvas;
   canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
   page.width = canvas.width; page.height = canvas.height;
   const ctx = canvas.getContext("2d");
   ctx.drawImage(image, 0, 0);
-  for (const region of page.regions) drawRegion(ctx, canvas, region);
+  for (const region of page.regions.filter(item => item.surface === "uniform")) cleanUniformRegion(ctx, canvas, region);
   syncStageSize();
   requestAnimationFrame(syncStageSize);
   setTimeout(syncStageSize, 80);
 }
 
-function drawRegion(ctx, canvas, region) {
+function regionBox(region, canvas) {
   const x = region.x / 1000 * canvas.width;
   const y = region.y / 1000 * canvas.height;
-  const w = Math.min(region.w / 1000 * canvas.width, canvas.width - x);
-  const h = Math.min(region.h / 1000 * canvas.height, canvas.height - y);
-  const pad = Math.max(5, Math.min(w, h) * .06);
-  if (region.treatment === "blur") {
-    ctx.save();
-    ctx.filter = `blur(${Math.max(5, Math.round(w * .035))}px)`;
-    ctx.drawImage(canvas, x, y, w, h, x, y, w, h);
-    ctx.restore();
-    ctx.fillStyle = "rgba(255,255,255,.76)";
-  } else ctx.fillStyle = region.kind === "narration" ? "#f5f1df" : "#fff";
-  roundedRect(ctx, x - pad, y - pad, w + pad * 2, h + pad * 2, Math.min(20, pad * 1.6));
+  return {
+    x,
+    y,
+    w: Math.min(region.w / 1000 * canvas.width, canvas.width - x),
+    h: Math.min(region.h / 1000 * canvas.height, canvas.height - y),
+  };
+}
+
+function cleanUniformRegion(ctx, canvas, region) {
+  const { x, y, w, h } = regionBox(region, canvas);
+  const pad = Math.max(2, Math.min(w, h) * .035);
+  const samplePad = Math.max(3, Math.round(pad * 1.8));
+  const sampleX = Math.max(0, Math.floor(x - samplePad));
+  const sampleY = Math.max(0, Math.floor(y - samplePad));
+  const sampleW = Math.max(1, Math.min(canvas.width - sampleX, Math.ceil(w + samplePad * 2)));
+  const sampleH = Math.max(1, Math.min(canvas.height - sampleY, Math.ceil(h + samplePad * 2)));
+  const pixels = ctx.getImageData(sampleX, sampleY, sampleW, sampleH).data;
+  const colors = [];
+  const edge = Math.max(1, Math.round(Math.min(sampleW, sampleH) * .1));
+  for (let py = 0; py < sampleH; py += 2) {
+    for (let px = 0; px < sampleW; px += 2) {
+      if (px > edge && px < sampleW - edge && py > edge && py < sampleH - edge) continue;
+      const i = (py * sampleW + px) * 4;
+      const luminance = pixels[i] * .2126 + pixels[i + 1] * .7152 + pixels[i + 2] * .0722;
+      if (luminance < 45) continue;
+      colors.push([pixels[i], pixels[i + 1], pixels[i + 2]]);
+    }
+  }
+  colors.sort((a, b) => (a[0] + a[1] + a[2]) - (b[0] + b[1] + b[2]));
+  const middle = colors[Math.floor(colors.length / 2)] || [255, 255, 255];
+  ctx.save();
+  ctx.fillStyle = `rgb(${middle[0]},${middle[1]},${middle[2]})`;
+  ctx.shadowColor = ctx.fillStyle;
+  ctx.shadowBlur = Math.max(1.5, pad * .8);
+  roundedRect(ctx, x - pad, y - pad, w + pad * 2, h + pad * 2, Math.min(10, pad * 1.4));
   ctx.fill();
-  ctx.fillStyle = "#111116";
-  ctx.textAlign = "center"; ctx.textBaseline = "middle";
-  const weight = region.kind === "sfx" ? 850 : 700;
-  const italic = region.kind === "thought" ? "italic " : "";
-  const fontSize = fitText(ctx, region.translation, w * .9, h * .84, weight, italic);
-  ctx.font = `${italic}${weight} ${fontSize}px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`;
-  const lines = wrapText(ctx, region.translation, w * .9);
-  const lineHeight = fontSize * 1.12;
-  let lineY = y + h / 2 - ((lines.length - 1) * lineHeight) / 2;
-  for (const line of lines) { ctx.fillText(line, x + w / 2, lineY); lineY += lineHeight; }
+  ctx.restore();
 }
 
 function roundedRect(ctx, x, y, w, h, r) {
@@ -564,44 +598,6 @@ function roundedRect(ctx, x, y, w, h, r) {
   ctx.beginPath(); ctx.roundRect(x, y, w, h, radius);
 }
 
-function wrapText(ctx, text, maxWidth) {
-  const words = String(text).trim().split(/\s+/).filter(Boolean);
-  if (!words.length) return [""];
-  const lines = []; let line = words[0];
-  for (let i = 1; i < words.length; i++) {
-    const test = `${line} ${words[i]}`;
-    if (ctx.measureText(test).width > maxWidth) { lines.push(line); line = words[i]; }
-    else line = test;
-  }
-  lines.push(line); return lines;
-}
-
-function fitText(ctx, text, maxWidth, maxHeight, weight, italic) {
-  let size = Math.min(54, Math.max(13, maxHeight * .3));
-  while (size > 12) {
-    ctx.font = `${italic}${weight} ${size}px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`;
-    const lines = wrapText(ctx, text, maxWidth);
-    if (lines.length * size * 1.12 <= maxHeight && lines.every(line => ctx.measureText(line).width <= maxWidth)) break;
-    size -= 1;
-  }
-  return size;
-}
-
-function renderRegionList(page) {
-  elements.regionList.innerHTML = "";
-  page.regions.forEach((region, index) => {
-    const item = document.createElement("label");
-    item.className = "region-item";
-    item.innerHTML = `<span>${kindLabel(region.kind)} ${index + 1}</span><textarea aria-label="Traduction ${index + 1}"></textarea>`;
-    const area = $("textarea", item);
-    area.value = region.translation;
-    area.addEventListener("input", () => { region.translation = area.value; });
-    elements.regionList.appendChild(item);
-  });
-  if (!page.regions.length) elements.regionList.innerHTML = `<p class="microcopy">Aucun texte n’a été détecté sur cette page.</p>`;
-}
-
-function kindLabel(kind) { return ({ speech: "Dialogue", thought: "Pensée", narration: "Narration", sfx: "Onomatopée" })[kind] || "Texte"; }
 function languageLabel(language) { return ({ english: "Anglais", japanese: "Japonais", chinese: "Chinois", auto: "Langue détectée" })[language] || "Langue détectée"; }
 
 function syncStageSize() {
@@ -609,14 +605,12 @@ function syncStageSize() {
   if (!elements.canvas.width || !elements.canvas.height) return;
   const padding = state.readerMode ? 0 : (window.innerWidth <= 680 ? 16 : 44);
   const available = Math.max(1, elements.viewerStage.clientWidth - padding);
-  const natural = elements.originalImage.naturalWidth || elements.canvas.width;
+  const natural = elements.canvas.width;
   const fittedWidth = Math.min(natural, available);
   const width = Math.round(fittedWidth * (state.readerMode ? state.zoom : 1));
   const ratio = elements.canvas.height / elements.canvas.width;
   elements.stagePage.style.width = `${width}px`;
   elements.stagePage.style.height = `${Math.round(width * ratio)}px`;
-  elements.originalImage.style.width = "100%";
-  elements.originalImage.style.height = "100%";
   elements.canvas.style.width = "100%";
   elements.canvas.style.height = "100%";
 }
@@ -652,7 +646,7 @@ async function downloadResult() {
   if (!state.pages.length) return;
   if (state.pages.length === 1) {
     const link = document.createElement("a");
-    link.download = "scanmood-traduction.jpg";
+    link.download = "scanmood-nettoye.jpg";
     link.href = await renderPageDataUrl(state.pages[0]);
     link.click(); return;
   }
@@ -669,7 +663,7 @@ async function downloadResult() {
     else pdf.addPage([width, height], orientation);
     pdf.addImage(image, "JPEG", 0, 0, width, height);
   }
-  pdf.save("scanmood-traduction.pdf");
+  pdf.save("scanmood-nettoye.pdf");
 }
 
 const HISTORY_DB = "scanmood-history";
@@ -716,6 +710,7 @@ function historyPages() {
     regions: page.regions,
     detectedLanguage: page.detectedLanguage || "auto",
     translationError: page.translationError || "",
+    cleanedBaseDataUrl: page.cleanedBaseDataUrl || "",
     translatedDataUrl: "",
   }));
 }
@@ -725,12 +720,11 @@ async function saveCurrentHistory() {
   state.historyId ||= globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
   const base = {
     id: state.historyId,
-    title: state.sourceTitle || state.pages[0]?.name || "Scan traduit",
+    title: state.sourceTitle || state.pages[0]?.name || "Scan nettoyé",
     url: state.sourceUrl || "",
     savedAt: Date.now(),
     pageCount: state.pages.length,
     sourceLanguage: $("#languageSelect").value,
-    style: $("#styleSelect").value,
   };
   try {
     await historyOperation("readwrite", store => store.put({ ...base, pages: historyPages() }));
@@ -748,7 +742,6 @@ async function deleteHistoryEntry(id) {
 async function openHistoryEntry(entry) {
   elements.history.close();
   $("#languageSelect").value = entry.sourceLanguage || "auto";
-  $("#styleSelect").value = entry.style || "natural";
   state.historyId = entry.id;
   state.sourceUrl = entry.url || "";
   state.sourceTitle = entry.title || "Chapitre enregistré";
@@ -761,10 +754,8 @@ async function openHistoryEntry(entry) {
     runTranslation();
     return;
   }
-  state.pages = entry.pages.map(page => ({ ...page, translatedDataUrl: "" }));
+  state.pages = entry.pages.map(page => ({ ...page, cleanedBaseDataUrl: page.cleanedBaseDataUrl || "", translatedDataUrl: "" }));
   state.currentPage = 0;
-  elements.viewerStage.dataset.view = "translated";
-  $$('[data-view]').forEach(button => button.classList.toggle("active", button.dataset.view === "translated"));
   elements.processing.hidden = true;
   elements.result.hidden = false;
   await renderCurrentPage();
@@ -791,7 +782,7 @@ async function renderHistoryList() {
     const main = document.createElement("div");
     main.className = "history-item-main";
     const title = document.createElement("strong");
-    title.textContent = entry.title || "Chapitre traduit";
+    title.textContent = entry.title || "Chapitre nettoyé";
     const meta = document.createElement("small");
     meta.textContent = `${entry.pageCount || 0} page${entry.pageCount > 1 ? "s" : ""} · ${new Intl.DateTimeFormat("fr-FR", { dateStyle: "short", timeStyle: "short" }).format(entry.savedAt)}`;
     main.append(title, meta);
@@ -845,30 +836,8 @@ elements.translateBtn.addEventListener("click", () => runTranslation());
 $("#newScanBtn").addEventListener("click", () => { toggleReaderMode(false); elements.result.hidden = true; elements.sourceCard.scrollIntoView({ behavior: "smooth", block: "start" }); });
 
 // Résultats
-$$('[data-view]').forEach(button => button.addEventListener("click", () => {
-  $$('[data-view]').forEach(item => item.classList.toggle("active", item === button));
-  elements.viewerStage.dataset.view = button.dataset.view;
-  if (button.dataset.view === "compare") {
-    const value = Number(elements.compareRange.value);
-    elements.translatedLayer.style.clipPath = `inset(0 ${100 - value}% 0 0)`;
-    elements.compareHandle.style.left = `${value}%`;
-  }
-}));
-elements.compareRange.addEventListener("input", () => {
-  const value = Number(elements.compareRange.value);
-  elements.translatedLayer.style.clipPath = `inset(0 ${100 - value}% 0 0)`;
-  elements.compareHandle.style.left = `${value}%`;
-});
 $("#prevPage").addEventListener("click", async () => { if (state.currentPage > 0) { state.currentPage--; await renderCurrentPage(); } });
 $("#nextPage").addEventListener("click", async () => { if (state.currentPage < state.pages.length - 1) { state.currentPage++; await renderCurrentPage(); } });
-$("#redrawBtn").addEventListener("click", async () => {
-  const page = state.pages[state.currentPage];
-  page.translatedDataUrl = "";
-  await drawTranslation(page);
-  buildReaderStack();
-  saveCurrentHistory().catch(() => {});
-  toast("Modifications appliquées");
-});
 $("#downloadBtn").addEventListener("click", downloadResult);
 elements.readerBtn.addEventListener("click", () => toggleReaderMode());
 $("#zoomOutBtn").addEventListener("click", () => updateZoom(-.1));
@@ -878,8 +847,8 @@ window.addEventListener("resize", syncStageSize);
 // Réglages
 function openSettings(message = "") {
   elements.settingsMessage.textContent = message || (state.apiBase
-    ? "Le moteur gratuit Cloudflare est actif. Tu peux importer un scan, un PDF ou l’adresse publique d’un chapitre."
-    : "La vraie traduction sera disponible dès que l’adresse Cloudflare aura été ajoutée dans config.js sur GitHub.");
+    ? "Le moteur gratuit Cloudflare est actif. Cette version teste uniquement le nettoyage des anciennes écritures."
+    : "Le nettoyage sera disponible dès que l’adresse Cloudflare aura été ajoutée dans config.js sur GitHub.");
   elements.settings.showModal();
 }
 $("#settingsBtn").addEventListener("click", () => openSettings());

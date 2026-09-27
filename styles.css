@@ -95,6 +95,7 @@ main { width: min(100% - 32px, 1040px); margin: 0 auto; padding: 74px 0 86px; }
 .engine-banner p { margin: 3px 0 0; color: var(--muted); font-size: .78rem; line-height: 1.35; }
 .engine-banner button { min-height: 36px; padding: 0 12px; border: 0; border-radius: 11px; color: #fff; background: var(--ink); font-size: .78rem; font-weight: 700; }
 .options-grid { margin-top: 14px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.options-grid.single-option { grid-template-columns: 1fr; }
 .options-grid label { padding: 13px 15px; border: 1px solid var(--line); border-radius: 16px; background: #fafafd; }
 .options-grid label > span { margin-bottom: 5px; }
 select { width: 100%; border: 0; outline: 0; color: var(--ink); background: transparent; font-size: .95rem; font-weight: 620; }
@@ -128,6 +129,7 @@ select { width: 100%; border: 0; outline: 0; color: var(--ink); background: tran
 .view-switch { padding: 4px; display: flex; gap: 2px; border-radius: 13px; background: #f0f1f4; }
 .view-switch button { min-height: 37px; padding: 0 13px; border: 0; border-radius: 10px; color: var(--muted); background: transparent; font-size: .81rem; font-weight: 680; }
 .view-switch button.active { color: var(--ink); background: #fff; box-shadow: 0 3px 11px rgba(20,19,35,.08); }
+.result-only-label { padding: 0 8px; font-size: .86rem; }
 .viewer-actions { display: flex; align-items: center; gap: 8px; }
 .download-btn, .reader-btn { min-height: 42px; padding: 0 15px; display: inline-flex; align-items: center; gap: 7px; border-radius: 13px; font-size: .84rem; font-weight: 700; }
 .download-btn { border: 0; color: #fff; background: #0b0b0f; }
