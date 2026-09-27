@@ -202,6 +202,13 @@ CRITICAL CLASSIFICATION RULES:
 Return regions in natural reading order. If there is no readable text, return an empty regions array.`;
 }
 
+function detectionRetryPrompt(language) {
+  const languageRule = language === "auto" ? "The page may be English, Japanese or Chinese." : `The source language is ${language}.`;
+  return `OCR the comic page carefully. ${languageRule} Find ALL visible lettering, including dialogue inside white or black balloons, captions, small text, and large sound effects over the drawing.
+Return ONLY JSON: {"detectedLanguage":"english|japanese|chinese","regions":[{"x":0,"y":0,"w":0,"h":0,"original":"","kind":"speech|thought|narration|sfx","container":"bubble|box|none","surface":"uniform|artwork"}]}
+Coordinates are integers from 0 to 1000. Boxes must tightly cover the letters. Text inside balloons or caption boxes uses container bubble/box. Text over drawings uses container none and surface artwork. A black balloon with white letters is still a bubble with a uniform surface. Do not return an empty array when readable letters are visible.`;
+}
+
 function extractContent(payload) {
   if (typeof payload?.response === "string") return payload.response;
   const content = payload?.choices?.[0]?.message?.content;
@@ -234,7 +241,8 @@ async function analyzeCleanup(request, env, origin) {
   if (!/^data:image\/(jpeg|png|webp);base64,/i.test(body?.imageDataUrl || "")) return json({ error: "Image invalide." }, 400, origin);
   if (body.imageDataUrl.length > 14_000_000) return json({ error: "Image trop lourde." }, 413, origin);
   try {
-    const payload = await env.AI.run(env.AI_MODEL || "@cf/google/gemma-4-26b-a4b-it", {
+    const model = env.AI_MODEL || "@cf/google/gemma-4-26b-a4b-it";
+    const payload = await env.AI.run(model, {
       messages: [{
         role: "user",
         content: [
@@ -247,7 +255,24 @@ async function analyzeCleanup(request, env, origin) {
       response_format: { type: "json_object" },
       chat_template_kwargs: { enable_thinking: false },
     });
-    return json(parseModelJson(extractContent(payload)), 200, origin);
+    let parsed = parseModelJson(extractContent(payload));
+    if (!parsed.regions.length) {
+      const retry = await env.AI.run(model, {
+        messages: [{
+          role: "user",
+          content: [
+            { type: "text", text: detectionRetryPrompt(body.sourceLanguage) },
+            { type: "image_url", image_url: { url: body.imageDataUrl } },
+          ],
+        }],
+        temperature: 0,
+        max_completion_tokens: 4096,
+        response_format: { type: "json_object" },
+        chat_template_kwargs: { enable_thinking: false },
+      });
+      parsed = parseModelJson(extractContent(retry));
+    }
+    return json(parsed, 200, origin);
   } catch (error) {
     const detail = String(error?.message || error || "");
     if (/quota|daily free allocation|neurons|usage limit/i.test(detail)) {

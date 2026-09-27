@@ -1,6 +1,11 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const MAX_PAGES = 3;
+const TESSERACT_MODULE = "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.esm.min.js";
+
+let localOcrWorkerPromise = null;
+let localOcrWorkerLanguage = "";
+let localOcrQueue = Promise.resolve();
 
 const state = {
   pin: "",
@@ -274,25 +279,157 @@ function startProgress() {
 }
 
 async function cleanPage(page) {
-  const response = await fetch(`${state.apiBase}/clean`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      imageDataUrl: page.dataUrl,
-      sourceLanguage: $("#languageSelect").value,
-    }),
-  });
-  const data = await safeJson(response);
-  if (!response.ok) throw new Error(data?.error || "L’analyse du nettoyage a échoué.");
-  if (!Array.isArray(data.regions)) throw new Error("Réponse de nettoyage incomplète.");
-  page.detectedLanguage = data.detectedLanguage || "auto";
-  page.regions = data.regions.map(normalizeRegion).filter(Boolean);
+  const sourceLanguage = $("#languageSelect").value;
+  let data = null;
+  let remoteError = "";
+  try {
+    const response = await fetch(`${state.apiBase}/clean`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ imageDataUrl: page.dataUrl, sourceLanguage }),
+    });
+    data = await safeJson(response);
+    if (!response.ok) remoteError = data?.error || "L’analyse en ligne a échoué.";
+  } catch {
+    remoteError = "Le moteur en ligne n’est pas joignable.";
+  }
+
+  const remoteRegions = Array.isArray(data?.regions) ? data.regions.map(normalizeRegion).filter(Boolean) : [];
+  if (remoteRegions.length) {
+    page.detectedLanguage = data.detectedLanguage || sourceLanguage;
+    page.regions = remoteRegions;
+    page.detectionSource = "cloudflare";
+  } else {
+    setProcessing("Deuxième lecture du scan…", "OCR local gratuit : recherche des lettres oubliées", 54);
+    const local = await detectRegionsLocally(page, sourceLanguage);
+    page.detectedLanguage = local.detectedLanguage;
+    page.regions = local.regions.map(normalizeRegion).filter(Boolean);
+    page.detectionSource = "local-ocr";
+  }
+
+  if (!page.regions.length) {
+    const suffix = remoteError ? ` (${remoteError})` : "";
+    throw new Error(`Aucune écriture n’a été détectée sur cette page${suffix}.`);
+  }
   await refineCleanupSurfaces(page);
   const artworkRegions = page.regions.filter(region => region.surface === "artwork");
   if (artworkRegions.length) {
     await inpaintArtworkRegions(page, artworkRegions);
   }
   return page.regions;
+}
+
+function localOcrLanguage(sourceLanguage) {
+  return ({ english: "eng", japanese: "jpn", chinese: "chi_sim+chi_tra" })[sourceLanguage] || "eng";
+}
+
+async function getLocalOcrWorker(sourceLanguage) {
+  const language = localOcrLanguage(sourceLanguage);
+  if (localOcrWorkerPromise && localOcrWorkerLanguage === language) return localOcrWorkerPromise;
+  if (localOcrWorkerPromise) await shutdownLocalOcr();
+  localOcrWorkerLanguage = language;
+  localOcrWorkerPromise = import(TESSERACT_MODULE)
+    .then(({ createWorker }) => createWorker(language, 1, { logger: () => {} }))
+    .catch(error => {
+      localOcrWorkerPromise = null;
+      localOcrWorkerLanguage = "";
+      throw error;
+    });
+  return localOcrWorkerPromise;
+}
+
+function ocrLines(data, sourceLanguage) {
+  const lines = [];
+  const add = item => {
+    const bbox = item?.bbox;
+    const text = String(item?.text || "").replace(/\s+/g, " ").trim();
+    const confidence = Number(item?.confidence ?? item?.conf ?? 0);
+    if (!bbox || !text || confidence < 45 || !/[\p{L}\p{N}]/u.test(text)) return;
+    if (sourceLanguage === "english" || sourceLanguage === "auto") {
+      const words = text.match(/[A-Za-z]{2,}/g) || [];
+      if (!words.some(word => word.length >= 3)) return;
+      if (words.length === 1 && confidence < 60) return;
+    }
+    const x0 = Number(bbox.x0); const y0 = Number(bbox.y0);
+    const x1 = Number(bbox.x1); const y1 = Number(bbox.y1);
+    if (![x0, y0, x1, y1].every(Number.isFinite) || x1 <= x0 || y1 <= y0) return;
+    lines.push({ text, confidence, bbox: { x0, y0, x1, y1 } });
+  };
+
+  for (const block of data?.blocks || []) {
+    for (const paragraph of block.paragraphs || []) {
+      const paragraphLines = paragraph.lines || [];
+      if (paragraphLines.length) {
+        add({
+          text: paragraphLines.map(line => line.text || "").join(" "),
+          confidence: paragraphLines.reduce((sum, line) => sum + Number(line.confidence || 0), 0) / paragraphLines.length,
+          bbox: paragraph.bbox,
+        });
+      } else add(paragraph);
+    }
+  }
+  if (!lines.length) for (const line of data?.lines || []) add(line);
+  if (!lines.length) {
+    const groups = new Map();
+    for (const word of data?.words || []) {
+      const key = [word.page_num, word.block_num, word.par_num, word.line_num].join(":");
+      const group = groups.get(key) || { text: [], confidence: 0, count: 0, bbox: null };
+      const box = word.bbox;
+      if (!box) continue;
+      group.text.push(String(word.text || ""));
+      group.confidence += Number(word.confidence || 0);
+      group.count++;
+      group.bbox = group.bbox ? {
+        x0: Math.min(group.bbox.x0, box.x0), y0: Math.min(group.bbox.y0, box.y0),
+        x1: Math.max(group.bbox.x1, box.x1), y1: Math.max(group.bbox.y1, box.y1),
+      } : { ...box };
+      groups.set(key, group);
+    }
+    for (const group of groups.values()) add({ text: group.text.join(" "), confidence: group.confidence / Math.max(1, group.count), bbox: group.bbox });
+  }
+  return lines;
+}
+
+async function performLocalOcr(page, sourceLanguage) {
+  let worker;
+  try {
+    worker = await getLocalOcrWorker(sourceLanguage);
+    await worker.setParameters({ tessedit_pageseg_mode: "11", preserve_interword_spaces: "1" });
+    const result = await worker.recognize(page.dataUrl, {}, { blocks: true, text: true });
+    const lines = ocrLines(result?.data, sourceLanguage);
+    const regions = lines.map(line => {
+      const height = line.bbox.y1 - line.bbox.y0;
+      const padX = Math.max(2, height * .1);
+      const padY = Math.max(1, height * .08);
+      const x0 = clamp(line.bbox.x0 - padX, 0, page.width);
+      const y0 = clamp(line.bbox.y0 - padY, 0, page.height);
+      const x1 = clamp(line.bbox.x1 + padX, 0, page.width);
+      const y1 = clamp(line.bbox.y1 + padY, 0, page.height);
+      return {
+        x: x0 / page.width * 1000, y: y0 / page.height * 1000,
+        w: (x1 - x0) / page.width * 1000, h: (y1 - y0) / page.height * 1000,
+        original: line.text, kind: "speech", container: "bubble", surface: "uniform",
+      };
+    });
+    const detectedLanguage = sourceLanguage === "auto" ? "english" : sourceLanguage;
+    return { regions, detectedLanguage };
+  } catch {
+    throw new Error("La seconde lecture OCR n’a pas pu démarrer. Vérifie la connexion puis réessaie.");
+  }
+}
+
+function detectRegionsLocally(page, sourceLanguage) {
+  const task = localOcrQueue.then(() => performLocalOcr(page, sourceLanguage));
+  localOcrQueue = task.catch(() => {});
+  return task;
+}
+
+async function shutdownLocalOcr() {
+  const promise = localOcrWorkerPromise;
+  localOcrWorkerPromise = null;
+  localOcrWorkerLanguage = "";
+  if (!promise) return;
+  try { (await promise)?.terminate(); } catch {}
 }
 
 async function inpaintArtworkRegions(page, regions) {
@@ -430,6 +567,8 @@ async function runTranslation() {
       }
     }
     await Promise.all(Array.from({ length: Math.min(3, state.pages.length) }, () => translationWorker()));
+    await localOcrQueue;
+    await shutdownLocalOcr();
     if (quotaReached) {
       state.pages.forEach((page, index) => {
         if (attempted.has(index)) return;
@@ -452,6 +591,7 @@ async function runTranslation() {
     requestAnimationFrame(syncStageSize);
     if (failedCount) toast(`${translatedCount} page${translatedCount > 1 ? "s" : ""} nettoyée${translatedCount > 1 ? "s" : ""}, ${failedCount} à réessayer.`);
   } catch (error) {
+    await shutdownLocalOcr();
     clearInterval(state.progressTimer);
     elements.processing.hidden = true;
     elements.result.hidden = true;
@@ -466,7 +606,7 @@ function normalizeRegion(region) {
   const container = ["bubble", "box", "none"].includes(region.container) ? region.container : (kind === "sfx" ? "none" : "bubble");
   return {
     x: clamp(nums[0], 0, 1000), y: clamp(nums[1], 0, 1000),
-    w: clamp(nums[2], 20, 1000), h: clamp(nums[3], 20, 1000),
+    w: clamp(nums[2], 4, 1000), h: clamp(nums[3], 4, 1000),
     original: String(region.original || ""),
     kind,
     container,

@@ -14,6 +14,9 @@ Cette version est volontairement un prototype qualité. Elle retire les ancienne
 - un seul affichage final, sans options Original ou Comparer ;
 - export du résultat nettoyé en JPG ou PDF ;
 - lecture verticale et historique local conservés.
+- triple sécurité de détection : lecture visuelle, seconde lecture ciblée, puis OCR local gratuit dans le navigateur si aucune zone n’a été renvoyée ;
+- une page avec zéro zone détectée est maintenant signalée en erreur au lieu d’être affichée comme si elle avait été nettoyée.
+- le cache mobile ne dépend plus de fichiers absents : la nouvelle version peut enfin remplacer correctement l’ancienne sur iPhone.
 
 La traduction et la remise en page typographique seront ajoutées seulement après validation du nettoyage sur plusieurs scans représentatifs.
 
@@ -27,7 +30,7 @@ La configuration fournie utilise déjà :
 https://scanmood-api.titata0711.workers.dev
 ```
 
-Après les deux déploiements verts, ouvrir l’application avec `?v=7` pour éviter l’ancien cache.
+Après les deux déploiements verts, ouvrir l’application avec `?v=9` pour éviter l’ancien cache.
 
 ## Fonctionnement
 
