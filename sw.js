@@ -1,4 +1,4 @@
-const CACHE = "scanmood-v7-2-local-rebuild-fallback";
+const CACHE = "scanmood-v8-bw-pixel-cleaning";
 const APP_SHELL = ["./", "./index.html", "./styles.css", "./app.js", "./config.js", "./manifest.webmanifest", "./icon.svg"];
 
 self.addEventListener("install", event => event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(APP_SHELL)).then(() => self.skipWaiting())));

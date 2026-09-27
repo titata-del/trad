@@ -290,37 +290,89 @@ async function cleanPage(page) {
   await refineCleanupSurfaces(page);
   const artworkRegions = page.regions.filter(region => region.surface === "artwork");
   if (artworkRegions.length) {
-    const maskDataUrl = await createCleanupMask(page, artworkRegions);
-    const inpaintResponse = await fetch(`${state.apiBase}/inpaint`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ imageDataUrl: page.dataUrl, maskDataUrl, width: page.width, height: page.height }),
-    });
-    if (inpaintResponse.ok) page.cleanedBaseDataUrl = await blobToDataUrl(await inpaintResponse.blob());
-    else {
-      page.localReconstruction = true;
-      page.cleanupWarning = "Le nettoyage Cloudflare n’a pas répondu : reconstruction locale appliquée.";
-    }
+    await inpaintArtworkRegions(page, artworkRegions);
   }
   return page.regions;
 }
 
-async function createCleanupMask(page, regions) {
+async function inpaintArtworkRegions(page, regions) {
   const image = await loadImage(page.dataUrl);
-  const canvas = document.createElement("canvas");
-  canvas.width = image.naturalWidth;
-  canvas.height = image.naturalHeight;
-  const ctx = canvas.getContext("2d");
-  ctx.fillStyle = "#000";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = "#fff";
-  for (const region of regions) {
-    const box = regionBox(region, canvas);
+  const master = document.createElement("canvas");
+  master.width = image.naturalWidth;
+  master.height = image.naturalHeight;
+  const masterCtx = master.getContext("2d");
+  masterCtx.drawImage(image, 0, 0);
+  let failed = 0;
+
+  for (const region of regions.slice(0, 16)) {
+    const box = regionBox(region, master);
+    const context = Math.max(54, Math.min(230, Math.max(box.w, box.h) * .72));
+    const desiredW = Math.max(256, Math.min(1024, box.w + context * 2));
+    const desiredH = Math.max(256, Math.min(1024, box.h + context * 2));
+    let cropX = clamp(box.x + box.w / 2 - desiredW / 2, 0, Math.max(0, master.width - desiredW));
+    let cropY = clamp(box.y + box.h / 2 - desiredH / 2, 0, Math.max(0, master.height - desiredH));
+    const cropW = Math.min(master.width - cropX, desiredW);
+    const cropH = Math.min(master.height - cropY, desiredH);
+    cropX = Math.round(cropX);
+    cropY = Math.round(cropY);
+    const targetW = Math.max(256, Math.min(1024, Math.round(cropW / 8) * 8));
+    const targetH = Math.max(256, Math.min(1024, Math.round(cropH / 8) * 8));
+
+    const cropCanvas = document.createElement("canvas");
+    cropCanvas.width = targetW;
+    cropCanvas.height = targetH;
+    cropCanvas.getContext("2d").drawImage(master, cropX, cropY, cropW, cropH, 0, 0, targetW, targetH);
+    const maskCanvas = document.createElement("canvas");
+    maskCanvas.width = targetW;
+    maskCanvas.height = targetH;
+    const maskCtx = maskCanvas.getContext("2d");
+    maskCtx.fillStyle = "#000";
+    maskCtx.fillRect(0, 0, targetW, targetH);
+    const scaleX = targetW / cropW;
+    const scaleY = targetH / cropH;
     const pad = Math.max(3, Math.min(box.w, box.h) * .035);
-    roundedRect(ctx, box.x - pad, box.y - pad, box.w + pad * 2, box.h + pad * 2, Math.min(12, pad));
-    ctx.fill();
+    maskCtx.fillStyle = "#fff";
+    roundedRect(
+      maskCtx,
+      (box.x - cropX - pad) * scaleX,
+      (box.y - cropY - pad) * scaleY,
+      (box.w + pad * 2) * scaleX,
+      (box.h + pad * 2) * scaleY,
+      Math.min(14, pad * Math.min(scaleX, scaleY)),
+    );
+    maskCtx.fill();
+
+    try {
+      const response = await fetch(`${state.apiBase}/inpaint`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imageDataUrl: cropCanvas.toDataURL("image/jpeg", .96),
+          maskDataUrl: maskCanvas.toDataURL("image/png"),
+          width: targetW,
+          height: targetH,
+        }),
+      });
+      if (!response.ok) throw new Error((await safeJson(response))?.error || "Reconstruction indisponible");
+      const restored = await loadImage(await blobToDataUrl(await response.blob()));
+      masterCtx.save();
+      roundedRect(masterCtx, box.x - pad, box.y - pad, box.w + pad * 2, box.h + pad * 2, Math.min(12, pad));
+      masterCtx.clip();
+      masterCtx.filter = "grayscale(1) contrast(1.06)";
+      masterCtx.drawImage(restored, 0, 0, restored.naturalWidth, restored.naturalHeight, cropX, cropY, cropW, cropH);
+      masterCtx.filter = "none";
+      masterCtx.restore();
+      region.inpainted = true;
+    } catch {
+      failed++;
+      region.inpainted = false;
+    }
   }
-  return canvas.toDataURL("image/png");
+  page.cleanedBaseDataUrl = master.toDataURL("image/jpeg", .96);
+  if (failed) {
+    page.localReconstruction = true;
+    page.cleanupWarning = `${failed} zone${failed > 1 ? "s" : ""} reconstruite${failed > 1 ? "s" : ""} localement.`;
+  }
 }
 
 function blobToDataUrl(blob) {
@@ -454,8 +506,7 @@ async function refineCleanupSurfaces(page) {
     if (!values.length) continue;
     const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
     const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
-    const darkShare = values.filter(value => value < 90).length / values.length;
-    if (variance > 1100 || darkShare > .16) region.surface = "artwork";
+    if (variance > 1100) region.surface = "artwork";
   }
   canvas.width = 1;
   canvas.height = 1;
@@ -479,9 +530,7 @@ async function renderPageDataUrl(page) {
   page.height = canvas.height;
   const ctx = canvas.getContext("2d");
   ctx.drawImage(image, 0, 0);
-  if (!page.cleanedBaseDataUrl) {
-    for (const region of page.regions.filter(item => item.surface === "artwork")) reconstructArtworkRegion(ctx, canvas, region);
-  }
+  for (const region of page.regions.filter(item => item.surface === "artwork" && !item.inpainted)) reconstructArtworkRegion(ctx, canvas, region);
   for (const region of page.regions.filter(item => item.surface === "uniform")) cleanUniformRegion(ctx, canvas, region);
   page.translatedDataUrl = canvas.toDataURL("image/jpeg", .95);
   canvas.width = 1;
@@ -594,9 +643,7 @@ async function drawTranslation(page) {
   page.width = canvas.width; page.height = canvas.height;
   const ctx = canvas.getContext("2d");
   ctx.drawImage(image, 0, 0);
-  if (!page.cleanedBaseDataUrl) {
-    for (const region of page.regions.filter(item => item.surface === "artwork")) reconstructArtworkRegion(ctx, canvas, region);
-  }
+  for (const region of page.regions.filter(item => item.surface === "artwork" && !item.inpainted)) reconstructArtworkRegion(ctx, canvas, region);
   for (const region of page.regions.filter(item => item.surface === "uniform")) cleanUniformRegion(ctx, canvas, region);
   syncStageSize();
   requestAnimationFrame(syncStageSize);
@@ -616,33 +663,68 @@ function regionBox(region, canvas) {
 
 function cleanUniformRegion(ctx, canvas, region) {
   const { x, y, w, h } = regionBox(region, canvas);
-  const pad = Math.max(2, Math.min(w, h) * .035);
-  const samplePad = Math.max(3, Math.round(pad * 1.8));
-  const sampleX = Math.max(0, Math.floor(x - samplePad));
-  const sampleY = Math.max(0, Math.floor(y - samplePad));
-  const sampleW = Math.max(1, Math.min(canvas.width - sampleX, Math.ceil(w + samplePad * 2)));
-  const sampleH = Math.max(1, Math.min(canvas.height - sampleY, Math.ceil(h + samplePad * 2)));
-  const pixels = ctx.getImageData(sampleX, sampleY, sampleW, sampleH).data;
-  const colors = [];
-  const edge = Math.max(1, Math.round(Math.min(sampleW, sampleH) * .1));
-  for (let py = 0; py < sampleH; py += 2) {
-    for (let px = 0; px < sampleW; px += 2) {
+  const pad = Math.max(2, Math.round(Math.min(w, h) * .035));
+  const sampleX = Math.max(0, Math.floor(x - pad));
+  const sampleY = Math.max(0, Math.floor(y - pad));
+  const sampleW = Math.max(2, Math.min(canvas.width - sampleX, Math.ceil(w + pad * 2)));
+  const sampleH = Math.max(2, Math.min(canvas.height - sampleY, Math.ceil(h + pad * 2)));
+  const imageData = ctx.getImageData(sampleX, sampleY, sampleW, sampleH);
+  const pixels = imageData.data;
+  const histogram = new Array(32).fill(0);
+  const samples = [];
+  const edge = Math.max(2, Math.round(Math.min(sampleW, sampleH) * .16));
+
+  for (let py = 0; py < sampleH; py++) {
+    for (let px = 0; px < sampleW; px++) {
       if (px > edge && px < sampleW - edge && py > edge && py < sampleH - edge) continue;
       const i = (py * sampleW + px) * 4;
-      const luminance = pixels[i] * .2126 + pixels[i + 1] * .7152 + pixels[i + 2] * .0722;
-      if (luminance < 45) continue;
-      colors.push([pixels[i], pixels[i + 1], pixels[i + 2]]);
+      const gray = pixels[i] * .2126 + pixels[i + 1] * .7152 + pixels[i + 2] * .0722;
+      const bin = clamp(Math.floor(gray / 8), 0, 31);
+      histogram[bin]++;
+      samples.push([pixels[i], pixels[i + 1], pixels[i + 2], gray, bin]);
     }
   }
-  colors.sort((a, b) => (a[0] + a[1] + a[2]) - (b[0] + b[1] + b[2]));
-  const middle = colors[Math.floor(colors.length / 2)] || [255, 255, 255];
-  ctx.save();
-  ctx.fillStyle = `rgb(${middle[0]},${middle[1]},${middle[2]})`;
-  ctx.shadowColor = ctx.fillStyle;
-  ctx.shadowBlur = Math.max(1.5, pad * .8);
-  roundedRect(ctx, x - pad, y - pad, w + pad * 2, h + pad * 2, Math.min(10, pad * 1.4));
-  ctx.fill();
-  ctx.restore();
+
+  const mode = histogram.indexOf(Math.max(...histogram));
+  const background = samples.filter(sample => Math.abs(sample[4] - mode) <= 1);
+  const count = Math.max(1, background.length);
+  const color = [0, 1, 2].map(channel => background.reduce((sum, sample) => sum + sample[channel], 0) / count);
+  const backgroundGray = color[0] * .2126 + color[1] * .7152 + color[2] * .0722;
+  const noise = Math.sqrt(background.reduce((sum, sample) => sum + (sample[3] - backgroundGray) ** 2, 0) / count);
+  const threshold = Math.max(20, noise * 3.2 + 12);
+  const mask = new Uint8Array(sampleW * sampleH);
+
+  for (let py = 0; py < sampleH; py++) {
+    for (let px = 0; px < sampleW; px++) {
+      const i = (py * sampleW + px) * 4;
+      const gray = pixels[i] * .2126 + pixels[i + 1] * .7152 + pixels[i + 2] * .0722;
+      if (Math.abs(gray - backgroundGray) > threshold) mask[py * sampleW + px] = 1;
+    }
+  }
+
+  const radius = Math.max(1, Math.min(2, Math.round(Math.min(w, h) / 70)));
+  const expanded = new Uint8Array(mask);
+  for (let py = radius; py < sampleH - radius; py++) {
+    for (let px = radius; px < sampleW - radius; px++) {
+      if (!mask[py * sampleW + px]) continue;
+      for (let dy = -radius; dy <= radius; dy++) {
+        for (let dx = -radius; dx <= radius; dx++) expanded[(py + dy) * sampleW + px + dx] = 1;
+      }
+    }
+  }
+
+  for (let py = 0; py < sampleH; py++) {
+    for (let px = 0; px < sampleW; px++) {
+      if (!expanded[py * sampleW + px]) continue;
+      const i = (py * sampleW + px) * 4;
+      const texture = background.length ? background[((px * 37 + py * 101) >>> 0) % background.length] : color;
+      pixels[i] = Math.round(color[0] * .82 + texture[0] * .18);
+      pixels[i + 1] = Math.round(color[1] * .82 + texture[1] * .18);
+      pixels[i + 2] = Math.round(color[2] * .82 + texture[2] * .18);
+      pixels[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(imageData, sampleX, sampleY);
 }
 
 function reconstructArtworkRegion(ctx, canvas, region) {

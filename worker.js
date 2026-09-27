@@ -282,14 +282,14 @@ async function inpaintCleanup(request, env, origin) {
   const height = Math.max(256, Math.min(2048, Math.round(Number(body.height) || 1024)));
   try {
     const output = await env.AI.run("@cf/runwayml/stable-diffusion-v1-5-inpainting", {
-      prompt: "Restore the original comic artwork and empty speech balloons. Remove every written character inside the white mask. Continue nearby lines, tones, paper texture and colors naturally. Preserve panel borders, balloon outlines, faces and the visual style exactly. Add no text, symbols, letters or new objects.",
-      negative_prompt: "text, letters, words, watermark, logo, new objects, changed face, changed character, blurry outlines",
+      prompt: "Restore the exact black-and-white manga line art hidden by the lettering inside the white mask. Remove every written character and its white outline. Continue nearby ink lines, screentones, hatching, gradients and paper grain naturally. Preserve faces, hair, clothing, panel borders and the original drawing style. Strict monochrome manga, sharp fine lines, no new content.",
+      negative_prompt: "text, letters, words, symbols, watermark, logo, color, new objects, changed face, changed character, blurry lines, smooth photographic texture",
       image_b64: body.imageDataUrl.split(",", 2)[1],
       mask: [...imageBytes(body.maskDataUrl)],
       width,
       height,
       num_steps: 20,
-      strength: 0.92,
+      strength: 0.86,
       guidance: 7.5,
     });
     return new Response(output, { status: 200, headers: { "Content-Type": "image/png", "Cache-Control": "no-store", ...cors(origin) } });
