@@ -17,6 +17,8 @@ Cette version est volontairement un prototype qualité. Elle retire les ancienne
 - triple sécurité de détection : lecture visuelle, seconde lecture ciblée, puis OCR local gratuit dans le navigateur si aucune zone n’a été renvoyée ;
 - une page avec zéro zone détectée est maintenant signalée en erreur au lieu d’être affichée comme si elle avait été nettoyée.
 - le cache mobile ne dépend plus de fichiers absents : la nouvelle version peut enfin remplacer correctement l’ancienne sur iPhone.
+- l’OCR local complète désormais systématiquement la détection Cloudflare et analyse les pages longues en deux parties qui se chevauchent, afin de récupérer les petits textes oubliés dans les bulles ;
+- hors bulles, l’inpainting est recollé uniquement à travers un masque des lettres et de leur contour : aucun rectangle généré ne peut plus remplacer tout l’arrière-plan.
 
 La traduction et la remise en page typographique seront ajoutées seulement après validation du nettoyage sur plusieurs scans représentatifs.
 
@@ -30,7 +32,7 @@ La configuration fournie utilise déjà :
 https://scanmood-api.titata0711.workers.dev
 ```
 
-Après les deux déploiements verts, ouvrir l’application avec `?v=9` pour éviter l’ancien cache.
+Après les deux déploiements verts, ouvrir l’application avec `?v=10` pour éviter l’ancien cache.
 
 ## Fonctionnement
 

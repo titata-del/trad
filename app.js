@@ -295,17 +295,17 @@ async function cleanPage(page) {
   }
 
   const remoteRegions = Array.isArray(data?.regions) ? data.regions.map(normalizeRegion).filter(Boolean) : [];
-  if (remoteRegions.length) {
-    page.detectedLanguage = data.detectedLanguage || sourceLanguage;
-    page.regions = remoteRegions;
-    page.detectionSource = "cloudflare";
-  } else {
-    setProcessing("Deuxième lecture du scan…", "OCR local gratuit : recherche des lettres oubliées", 54);
-    const local = await detectRegionsLocally(page, sourceLanguage);
-    page.detectedLanguage = local.detectedLanguage;
-    page.regions = local.regions.map(normalizeRegion).filter(Boolean);
-    page.detectionSource = "local-ocr";
+  let local = { regions: [], detectedLanguage: sourceLanguage };
+  try {
+    setProcessing("Deuxième lecture du scan…", "OCR local : recherche des textes oubliés", 54);
+    local = await detectRegionsLocally(page, sourceLanguage);
+  } catch (error) {
+    if (!remoteRegions.length) throw error;
   }
+  const localRegions = local.regions.map(normalizeRegion).filter(Boolean);
+  page.detectedLanguage = data?.detectedLanguage || local.detectedLanguage || sourceLanguage;
+  page.regions = mergeDetectedRegions(remoteRegions, localRegions);
+  page.detectionSource = remoteRegions.length && localRegions.length ? "double" : (remoteRegions.length ? "cloudflare" : "local-ocr");
 
   if (!page.regions.length) {
     const suffix = remoteError ? ` (${remoteError})` : "";
@@ -317,6 +317,37 @@ async function cleanPage(page) {
     await inpaintArtworkRegions(page, artworkRegions);
   }
   return page.regions;
+}
+
+function regionIntersection(a, b) {
+  const x0 = Math.max(a.x, b.x); const y0 = Math.max(a.y, b.y);
+  const x1 = Math.min(a.x + a.w, b.x + b.w); const y1 = Math.min(a.y + a.h, b.y + b.h);
+  return Math.max(0, x1 - x0) * Math.max(0, y1 - y0);
+}
+
+function mergeDetectedRegions(remoteRegions, localRegions) {
+  const result = [];
+  const usedRemote = new Set();
+  for (const local of localRegions) {
+    let bestIndex = -1;
+    let bestCoverage = 0;
+    remoteRegions.forEach((remote, index) => {
+      const coverage = regionIntersection(local, remote) / Math.max(1, local.w * local.h);
+      if (coverage > bestCoverage) { bestCoverage = coverage; bestIndex = index; }
+    });
+    if (bestIndex >= 0 && bestCoverage > .35) {
+      const remote = remoteRegions[bestIndex];
+      usedRemote.add(bestIndex);
+      result.push({ ...local, kind: remote.kind, container: remote.container, surface: remote.surface });
+    } else result.push(local);
+  }
+  remoteRegions.forEach((remote, index) => {
+    if (!usedRemote.has(index)) result.push(remote);
+  });
+  return result.filter((region, index, regions) => !regions.slice(0, index).some(previous => {
+    const intersection = regionIntersection(region, previous);
+    return intersection / Math.max(1, Math.min(region.w * region.h, previous.w * previous.h)) > .82;
+  }));
 }
 
 function localOcrLanguage(sourceLanguage) {
@@ -344,11 +375,11 @@ function ocrLines(data, sourceLanguage) {
     const bbox = item?.bbox;
     const text = String(item?.text || "").replace(/\s+/g, " ").trim();
     const confidence = Number(item?.confidence ?? item?.conf ?? 0);
-    if (!bbox || !text || confidence < 45 || !/[\p{L}\p{N}]/u.test(text)) return;
+    if (!bbox || !text || confidence < 32 || !/[\p{L}\p{N}]/u.test(text)) return;
     if (sourceLanguage === "english" || sourceLanguage === "auto") {
       const words = text.match(/[A-Za-z]{2,}/g) || [];
       if (!words.some(word => word.length >= 3)) return;
-      if (words.length === 1 && confidence < 60) return;
+      if (words.length === 1 && confidence < 55) return;
     }
     const x0 = Number(bbox.x0); const y0 = Number(bbox.y0);
     const x1 = Number(bbox.x1); const y1 = Number(bbox.y1);
@@ -359,13 +390,8 @@ function ocrLines(data, sourceLanguage) {
   for (const block of data?.blocks || []) {
     for (const paragraph of block.paragraphs || []) {
       const paragraphLines = paragraph.lines || [];
-      if (paragraphLines.length) {
-        add({
-          text: paragraphLines.map(line => line.text || "").join(" "),
-          confidence: paragraphLines.reduce((sum, line) => sum + Number(line.confidence || 0), 0) / paragraphLines.length,
-          bbox: paragraph.bbox,
-        });
-      } else add(paragraph);
+      if (paragraphLines.length) paragraphLines.forEach(add);
+      else add(paragraph);
     }
   }
   if (!lines.length) for (const line of data?.lines || []) add(line);
@@ -395,9 +421,31 @@ async function performLocalOcr(page, sourceLanguage) {
   try {
     worker = await getLocalOcrWorker(sourceLanguage);
     await worker.setParameters({ tessedit_pageseg_mode: "11", preserve_interword_spaces: "1" });
-    const result = await worker.recognize(page.dataUrl, {}, { blocks: true, text: true });
-    const lines = ocrLines(result?.data, sourceLanguage);
-    const regions = lines.map(line => {
+    const image = await loadImage(page.dataUrl);
+    const tiles = [];
+    if (image.naturalHeight > image.naturalWidth * 1.2) {
+      const tileHeight = Math.ceil(image.naturalHeight * .58);
+      for (const y of [0, image.naturalHeight - tileHeight]) {
+        const canvas = document.createElement("canvas");
+        canvas.width = image.naturalWidth; canvas.height = tileHeight;
+        canvas.getContext("2d").drawImage(image, 0, y, image.naturalWidth, tileHeight, 0, 0, canvas.width, canvas.height);
+        tiles.push({ dataUrl: canvas.toDataURL("image/jpeg", .96), offsetY: y });
+      }
+    } else tiles.push({ dataUrl: page.dataUrl, offsetY: 0 });
+
+    const lines = [];
+    for (const tile of tiles) {
+      const result = await worker.recognize(tile.dataUrl, {}, { blocks: true, text: true });
+      for (const line of ocrLines(result?.data, sourceLanguage)) {
+        lines.push({ ...line, bbox: { ...line.bbox, y0: line.bbox.y0 + tile.offsetY, y1: line.bbox.y1 + tile.offsetY } });
+      }
+    }
+    const uniqueLines = lines.filter((line, index) => !lines.slice(0, index).some(previous => {
+      const a = { x: line.bbox.x0, y: line.bbox.y0, w: line.bbox.x1 - line.bbox.x0, h: line.bbox.y1 - line.bbox.y0 };
+      const b = { x: previous.bbox.x0, y: previous.bbox.y0, w: previous.bbox.x1 - previous.bbox.x0, h: previous.bbox.y1 - previous.bbox.y0 };
+      return regionIntersection(a, b) / Math.max(1, Math.min(a.w * a.h, b.w * b.h)) > .72;
+    }));
+    const regions = uniqueLines.map(line => {
       const height = line.bbox.y1 - line.bbox.y0;
       const padX = Math.max(2, height * .1);
       const padY = Math.max(1, height * .08);
@@ -432,6 +480,94 @@ async function shutdownLocalOcr() {
   try { (await promise)?.terminate(); } catch {}
 }
 
+function artworkMaskForRegion(ctx, canvas, region) {
+  const box = regionBox(region, canvas);
+  const context = Math.max(5, Math.min(24, Math.round(Math.min(box.w, box.h) * .18)));
+  const x = Math.max(0, Math.floor(box.x - context));
+  const y = Math.max(0, Math.floor(box.y - context));
+  const w = Math.max(2, Math.min(canvas.width - x, Math.ceil(box.w + context * 2)));
+  const h = Math.max(2, Math.min(canvas.height - y, Math.ceil(box.h + context * 2)));
+  const imageData = ctx.getImageData(x, y, w, h);
+  const pixels = imageData.data;
+  const bx0 = clamp(Math.floor(box.x - x), 0, w - 1);
+  const by0 = clamp(Math.floor(box.y - y), 0, h - 1);
+  const bx1 = clamp(Math.ceil(box.x + box.w - x), bx0 + 1, w);
+  const by1 = clamp(Math.ceil(box.y + box.h - y), by0 + 1, h);
+  const ring = [];
+  const grayAt = (px, py) => {
+    const i = (clamp(py, 0, h - 1) * w + clamp(px, 0, w - 1)) * 4;
+    return pixels[i] * .2126 + pixels[i + 1] * .7152 + pixels[i + 2] * .0722;
+  };
+  for (let py = 0; py < h; py += 2) {
+    for (let px = 0; px < w; px += 2) {
+      if (px >= bx0 && px < bx1 && py >= by0 && py < by1) continue;
+      ring.push(grayAt(px, py));
+    }
+  }
+  const mean = ring.length ? ring.reduce((sum, value) => sum + value, 0) / ring.length : 127;
+  const variance = ring.length ? ring.reduce((sum, value) => sum + (value - mean) ** 2, 0) / ring.length : 0;
+  const deviation = Math.sqrt(variance);
+  let mask = new Uint8Array(w * h);
+  let count = 0;
+
+  for (let py = by0; py < by1; py++) {
+    for (let px = bx0; px < bx1; px++) {
+      const gray = grayAt(px, py);
+      const radius = 3;
+      const local = (grayAt(px - radius, py) + grayAt(px + radius, py) + grayAt(px, py - radius) + grayAt(px, py + radius)) / 4;
+      const extreme = gray < 62 || gray > 232;
+      const different = Math.abs(gray - mean) > Math.max(30, deviation * .7) || Math.abs(gray - local) > 24;
+      if (extreme && different) { mask[py * w + px] = 1; count++; }
+    }
+  }
+
+  const boxArea = Math.max(1, (bx1 - bx0) * (by1 - by0));
+  if (count / boxArea > .58) {
+    mask = new Uint8Array(w * h); count = 0;
+    for (let py = by0; py < by1; py++) {
+      for (let px = bx0; px < bx1; px++) {
+        const gray = grayAt(px, py);
+        if ((gray < 34 || gray > 248) && Math.abs(gray - mean) > 34) { mask[py * w + px] = 1; count++; }
+      }
+    }
+  }
+
+  const radius = Math.max(1, Math.min(3, Math.round(Math.min(box.w, box.h) / 55)));
+  const expanded = new Uint8Array(mask);
+  for (let py = by0; py < by1; py++) {
+    for (let px = bx0; px < bx1; px++) {
+      if (!mask[py * w + px]) continue;
+      for (let dy = -radius; dy <= radius; dy++) {
+        for (let dx = -radius; dx <= radius; dx++) {
+          const nx = px + dx; const ny = py + dy;
+          if (nx >= bx0 && nx < bx1 && ny >= by0 && ny < by1) expanded[ny * w + nx] = 1;
+        }
+      }
+    }
+  }
+  count = expanded.reduce((sum, value) => sum + value, 0);
+  return { x, y, w, h, imageData, mask: expanded, coverage: count / boxArea };
+}
+
+function drawArtworkMask(maskCtx, alphaCtx, maskInfo, cropX, cropY, scaleX, scaleY) {
+  const binary = document.createElement("canvas");
+  binary.width = maskInfo.w; binary.height = maskInfo.h;
+  const binaryCtx = binary.getContext("2d");
+  const data = binaryCtx.createImageData(maskInfo.w, maskInfo.h);
+  for (let index = 0; index < maskInfo.mask.length; index++) {
+    if (!maskInfo.mask[index]) continue;
+    const offset = index * 4;
+    data.data[offset] = 255; data.data[offset + 1] = 255; data.data[offset + 2] = 255; data.data[offset + 3] = 255;
+  }
+  binaryCtx.putImageData(data, 0, 0);
+  const dx = (maskInfo.x - cropX) * scaleX;
+  const dy = (maskInfo.y - cropY) * scaleY;
+  const dw = maskInfo.w * scaleX;
+  const dh = maskInfo.h * scaleY;
+  maskCtx.drawImage(binary, dx, dy, dw, dh);
+  alphaCtx.drawImage(binary, dx, dy, dw, dh);
+}
+
 async function inpaintArtworkRegions(page, regions) {
   const image = await loadImage(page.dataUrl);
   const master = document.createElement("canvas");
@@ -443,6 +579,8 @@ async function inpaintArtworkRegions(page, regions) {
 
   for (const region of regions.slice(0, 16)) {
     const box = regionBox(region, master);
+    const maskInfo = artworkMaskForRegion(masterCtx, master, region);
+    if (maskInfo.coverage < .004) { failed++; region.inpainted = false; continue; }
     const context = Math.max(54, Math.min(230, Math.max(box.w, box.h) * .72));
     const desiredW = Math.max(256, Math.min(1024, box.w + context * 2));
     const desiredH = Math.max(256, Math.min(1024, box.h + context * 2));
@@ -465,19 +603,12 @@ async function inpaintArtworkRegions(page, regions) {
     const maskCtx = maskCanvas.getContext("2d");
     maskCtx.fillStyle = "#000";
     maskCtx.fillRect(0, 0, targetW, targetH);
+    const alphaCanvas = document.createElement("canvas");
+    alphaCanvas.width = targetW; alphaCanvas.height = targetH;
+    const alphaCtx = alphaCanvas.getContext("2d");
     const scaleX = targetW / cropW;
     const scaleY = targetH / cropH;
-    const pad = Math.max(3, Math.min(box.w, box.h) * .035);
-    maskCtx.fillStyle = "#fff";
-    roundedRect(
-      maskCtx,
-      (box.x - cropX - pad) * scaleX,
-      (box.y - cropY - pad) * scaleY,
-      (box.w + pad * 2) * scaleX,
-      (box.h + pad * 2) * scaleY,
-      Math.min(14, pad * Math.min(scaleX, scaleY)),
-    );
-    maskCtx.fill();
+    drawArtworkMask(maskCtx, alphaCtx, maskInfo, cropX, cropY, scaleX, scaleY);
 
     try {
       const response = await fetch(`${state.apiBase}/inpaint`, {
@@ -492,13 +623,16 @@ async function inpaintArtworkRegions(page, regions) {
       });
       if (!response.ok) throw new Error((await safeJson(response))?.error || "Reconstruction indisponible");
       const restored = await loadImage(await blobToDataUrl(await response.blob()));
-      masterCtx.save();
-      roundedRect(masterCtx, box.x - pad, box.y - pad, box.w + pad * 2, box.h + pad * 2, Math.min(12, pad));
-      masterCtx.clip();
-      masterCtx.filter = "grayscale(1) contrast(1.06)";
-      masterCtx.drawImage(restored, 0, 0, restored.naturalWidth, restored.naturalHeight, cropX, cropY, cropW, cropH);
-      masterCtx.filter = "none";
-      masterCtx.restore();
+      const patch = document.createElement("canvas");
+      patch.width = targetW; patch.height = targetH;
+      const patchCtx = patch.getContext("2d");
+      patchCtx.filter = "grayscale(1) contrast(1.04)";
+      patchCtx.drawImage(restored, 0, 0, targetW, targetH);
+      patchCtx.filter = "none";
+      patchCtx.globalCompositeOperation = "destination-in";
+      patchCtx.drawImage(alphaCanvas, 0, 0);
+      patchCtx.globalCompositeOperation = "source-over";
+      masterCtx.drawImage(patch, 0, 0, targetW, targetH, cropX, cropY, cropW, cropH);
       region.inpainted = true;
     } catch {
       failed++;
@@ -868,70 +1002,39 @@ function cleanUniformRegion(ctx, canvas, region) {
 }
 
 function reconstructArtworkRegion(ctx, canvas, region) {
-  const box = regionBox(region, canvas);
-  const pad = Math.max(4, Math.round(Math.min(box.w, box.h) * .06));
-  const x = Math.max(1, Math.floor(box.x - pad));
-  const y = Math.max(1, Math.floor(box.y - pad));
-  const w = Math.max(2, Math.min(canvas.width - x - 1, Math.ceil(box.w + pad * 2)));
-  const h = Math.max(2, Math.min(canvas.height - y - 1, Math.ceil(box.h + pad * 2)));
-  if (w < 2 || h < 2) return;
+  const info = artworkMaskForRegion(ctx, canvas, region);
+  if (info.coverage < .004) return;
+  const work = new Uint8ClampedArray(info.imageData.data);
+  const remaining = new Uint8Array(info.mask);
+  const width = info.w; const height = info.h;
+  const neighbors = [[-1, 0, 1], [1, 0, 1], [0, -1, 1], [0, 1, 1], [-1, -1, .7], [1, -1, .7], [-1, 1, .7], [1, 1, .7]];
 
-  const margin = Math.max(2, Math.min(14, Math.round(Math.min(w, h) * .1)));
-  const sx = Math.max(0, x - margin);
-  const sy = Math.max(0, y - margin);
-  const sw = Math.min(canvas.width - sx, w + margin * 2);
-  const sh = Math.min(canvas.height - sy, h + margin * 2);
-  const source = ctx.getImageData(sx, sy, sw, sh);
-  const output = new ImageData(new Uint8ClampedArray(source.data), sw, sh);
-  const leftX = Math.max(0, x - sx - 1);
-  const rightX = Math.min(sw - 1, x - sx + w);
-  const topY = Math.max(0, y - sy - 1);
-  const bottomY = Math.min(sh - 1, y - sy + h);
-
-  const pixel = (data, px, py) => {
-    const i = (Math.max(0, Math.min(sh - 1, py)) * sw + Math.max(0, Math.min(sw - 1, px))) * 4;
-    return [data[i], data[i + 1], data[i + 2]];
-  };
-  const distance = (a, b) => Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]);
-  const mix = (a, b, amount) => a.map((value, index) => value * (1 - amount) + b[index] * amount);
-  const smooth = value => value * value * (3 - 2 * value);
-
-  for (let py = 0; py < h; py++) {
-    for (let px = 0; px < w; px++) {
-      const localX = x - sx + px;
-      const localY = y - sy + py;
-      const left = pixel(source.data, leftX, localY);
-      const right = pixel(source.data, rightX, localY);
-      const top = pixel(source.data, localX, topY);
-      const bottom = pixel(source.data, localX, bottomY);
-      const horizontal = mix(left, right, px / Math.max(1, w - 1));
-      const vertical = mix(top, bottom, py / Math.max(1, h - 1));
-      const horizontalScore = distance(left, right);
-      const verticalScore = distance(top, bottom);
-      const directionWeight = horizontalScore + verticalScore === 0 ? .5 : verticalScore / (horizontalScore + verticalScore);
-      let color = mix(vertical, horizontal, directionWeight);
-
-      const nearestEdge = Math.min(px, py, w - 1 - px, h - 1 - py);
-      const hash = ((px * 73856093) ^ (py * 19349663)) >>> 0;
-      const jitter = (hash % (margin * 2 + 1)) - margin;
-      let texture;
-      if (nearestEdge === px) texture = pixel(source.data, leftX, localY + jitter);
-      else if (nearestEdge === w - 1 - px) texture = pixel(source.data, rightX, localY + jitter);
-      else if (nearestEdge === py) texture = pixel(source.data, localX + jitter, topY);
-      else texture = pixel(source.data, localX + jitter, bottomY);
-      color = mix(color, texture, .12);
-
-      const feather = smooth(Math.min(1, (nearestEdge + 1) / Math.max(2, pad)));
-      const original = pixel(source.data, localX, localY);
-      color = mix(original, color, feather);
-      const i = (localY * sw + localX) * 4;
-      output.data[i] = Math.round(color[0]);
-      output.data[i + 1] = Math.round(color[1]);
-      output.data[i + 2] = Math.round(color[2]);
-      output.data[i + 3] = 255;
+  for (let pass = 0; pass < Math.max(width, height); pass++) {
+    const fills = [];
+    for (let py = 1; py < height - 1; py++) {
+      for (let px = 1; px < width - 1; px++) {
+        const position = py * width + px;
+        if (!remaining[position]) continue;
+        let red = 0; let green = 0; let blue = 0; let weight = 0;
+        for (const [dx, dy, amount] of neighbors) {
+          const neighbor = (py + dy) * width + px + dx;
+          if (remaining[neighbor]) continue;
+          const offset = neighbor * 4;
+          red += work[offset] * amount; green += work[offset + 1] * amount; blue += work[offset + 2] * amount; weight += amount;
+        }
+        if (weight) fills.push([position, red / weight, green / weight, blue / weight]);
+      }
     }
+    if (!fills.length) break;
+    for (const [position, red, green, blue] of fills) {
+      const offset = position * 4;
+      work[offset] = red; work[offset + 1] = green; work[offset + 2] = blue; work[offset + 3] = 255;
+      remaining[position] = 0;
+    }
+    if (!remaining.some(Boolean)) break;
   }
-  ctx.putImageData(output, sx, sy);
+  const output = new ImageData(work, width, height);
+  ctx.putImageData(output, info.x, info.y);
 }
 
 function roundedRect(ctx, x, y, w, h, r) {

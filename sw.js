@@ -1,4 +1,4 @@
-const CACHE = "scanmood-v9-double-ocr";
+const CACHE = "scanmood-v10-letter-mask";
 const APP_SHELL = ["./", "./index.html", "./styles.css", "./app.js", "./config.js"];
 
 self.addEventListener("install", event => event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(APP_SHELL)).then(() => self.skipWaiting())));
