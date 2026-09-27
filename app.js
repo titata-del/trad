@@ -312,6 +312,9 @@ async function cleanPage(page) {
     throw new Error(`Aucune écriture n’a été détectée sur cette page${suffix}.`);
   }
   await refineCleanupSurfaces(page);
+  for (const region of page.regions) {
+    if (region.container === "bubble" || region.container === "box") region.surface = "uniform";
+  }
   const artworkRegions = page.regions.filter(region => region.surface === "artwork");
   if (artworkRegions.length) {
     await inpaintArtworkRegions(page, artworkRegions);
@@ -760,9 +763,8 @@ async function refineCleanupSurfaces(page) {
       region.surface = "artwork";
       continue;
     }
-    if (region.surface === "artwork") continue;
     const { x, y, w, h } = regionBox(region, canvas);
-    const pad = Math.max(4, Math.min(w, h) * .09);
+    const pad = Math.max(8, Math.min(w, h) * .45);
     const sx = Math.max(0, Math.floor(x - pad));
     const sy = Math.max(0, Math.floor(y - pad));
     const sw = Math.max(1, Math.min(canvas.width - sx, Math.ceil(w + pad * 2)));
@@ -780,7 +782,10 @@ async function refineCleanupSurfaces(page) {
     if (!values.length) continue;
     const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
     const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
-    if (variance > 1100) region.surface = "artwork";
+    const paleRatio = values.filter(value => value >= 220).length / values.length;
+    const darkRatio = values.filter(value => value <= 35).length / values.length;
+    if (paleRatio > .68 || darkRatio > .68) region.surface = "uniform";
+    else region.surface = variance > 1100 ? "artwork" : "uniform";
   }
   canvas.width = 1;
   canvas.height = 1;

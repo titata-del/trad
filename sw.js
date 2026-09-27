@@ -1,4 +1,4 @@
-const CACHE = "scanmood-v10-letter-mask";
+const CACHE = "scanmood-v11-safe-bubbles";
 const APP_SHELL = ["./", "./index.html", "./styles.css", "./app.js", "./config.js"];
 
 self.addEventListener("install", event => event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(APP_SHELL)).then(() => self.skipWaiting())));
